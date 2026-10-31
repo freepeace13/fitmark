@@ -1,0 +1,9 @@
+{
+  "name": "fitmark",
+  "version": "0.1.0",
+  "description": "Fitmark: recruitment, hiring and talent workflows for Claude.",
+  "author": { "name": "Kin Basco", "url": "https://github.com/freepeace13" },
+  "homepage": "https://github.com/freepeace13/fitmark",
+  "license": "MIT",
+  "keywords": ["fitmark", "recruitment", "hiring", "talent", "agency"]
+}

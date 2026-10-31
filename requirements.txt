@@ -1,0 +1,5 @@
+jsonschema
+docxtpl
+python-docx
+pdfplumber
+pyyaml

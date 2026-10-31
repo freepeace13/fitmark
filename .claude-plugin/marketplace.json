@@ -1,0 +1,16 @@
+{
+  "name": "fitmark",
+  "owner": { "name": "Kin Basco", "url": "https://github.com/freepeace13" },
+  "metadata": {
+    "description": "Fitmark — a Claude plugin for recruitment, hiring and talent work."
+  },
+  "plugins": [
+    {
+      "name": "fitmark",
+      "source": "./",
+      "description": "Intake call to confirmed job spec, CV to client-ready submittal, spec diffs, agency profiles.",
+      "version": "0.1.0",
+      "keywords": ["recruitment", "hiring", "talent", "agency", "job-spec", "submittal"]
+    }
+  ]
+}
