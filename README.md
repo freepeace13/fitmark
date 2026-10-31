@@ -4,7 +4,7 @@
 
 Fitmark is a Claude plugin for recruitment, hiring and talent work. This repository is both the marketplace and the plugin: one install, one version, one agency profile.
 
-> **Status: foundation only.** The manifests, core rules and CI are in place. No skills or commands have shipped yet, so installing Fitmark today adds nothing you can use.
+> **Status: early development.** `/fitmark:intake` is the first working command. It writes the spec as Markdown for now, and agency profiles are read but not yet validated. The other commands below have not shipped.
 
 ## Install
 
