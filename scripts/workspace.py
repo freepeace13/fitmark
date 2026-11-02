@@ -12,6 +12,7 @@ import itertools
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -141,11 +142,23 @@ def require_workspace(args):
     return root
 
 
+def file_mode(path):
+    """Keep the mode of a file being replaced; a new file gets the normal one for this user."""
+    try:
+        return stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
+
+
 def write_atomic(path, text):
+    # mkstemp makes the file private to this user, which would lock out a shared workspace.
     handle, temp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(text)
+        os.chmod(temp, file_mode(path))
         os.replace(temp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -372,6 +385,7 @@ def cmd_job(args):
     if args.create:
         for folder in subfolders:
             folder.mkdir(parents=True, exist_ok=True)
+        spec_dir.mkdir(exist_ok=True)
         with job_lock(job_file):
             if job_file.is_file():
                 exists, job = True, read_job(job_file)

@@ -44,6 +44,8 @@ Fitmark/                                 # the workspace
 
 `candidate --create` reserves the submittal and document names as empty files, so parallel runs never share a path. An empty file is a run that didn't finish; it can't be recorded and is safe to delete.
 
+`job --create` makes the folder for the next spec version, so files can be saved straight to the paths it returns. A version only counts once its `spec.json` is saved.
+
 ## job.yaml
 
 Scripts write this file; recruiters don't. It holds JSON, which is also valid YAML, and matches `schemas/job.schema.json`. A file that can't be read blocks only its own job, and `status` lists it under `unreadable_jobs`. Status is one of `intake`, `spec_sent`, `confirmed`, `on_hold`, `filled` or `closed`.

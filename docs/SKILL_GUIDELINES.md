@@ -48,7 +48,7 @@ Pass the same `--plugin-root` and `--plugin-data` values to every `workspace.py`
 
 ## Scripts
 
-- Python 3.11+, standard library first. JSON in, JSON out. Non-zero exit with a JSON error object.
+- Python 3.9+, standard library first. JSON in, JSON out. Non-zero exit with a JSON error object.
 - Call scripts from skills through the plugin root, such as `${CLAUDE_PLUGIN_ROOT}/scripts/redact.py`.
 
 ## Versioning

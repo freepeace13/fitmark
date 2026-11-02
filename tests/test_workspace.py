@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import date
@@ -57,9 +58,7 @@ def saved_spec(ws, version=None):
     """Create the Acme job if needed, write the next spec and record it."""
     job = in_ws(ws, "job", *ACME, "--create")
     n = job["next_spec_version"]
-    path = Path(job["outputs"]["spec_json"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{}")
+    Path(job["outputs"]["spec_json"]).write_text("{}")
     in_ws(ws, "record", "--job", ACME_ID, "--event", "spec_saved", "--version", n)
     return n
 
@@ -177,7 +176,7 @@ def test_guard_refuses_a_job_subfolder_linked_into_the_plugin(ws, tmp_path, sub)
     plugin = tmp_path / "plugin"
     plugin.mkdir()
     job_dir = Path(in_ws(ws, "job", *ACME, "--create")["job_dir"])
-    (job_dir / sub).rmdir()
+    shutil.rmtree(job_dir / sub)
     (job_dir / sub).symlink_to(plugin)
     code, out = run("job", *ACME, "--workspace", ws, "--plugin-root", plugin)
     assert code == 1
@@ -421,6 +420,25 @@ def test_job_paths_for_the_first_version(ws):
     }
     for folder in ("intake", "spec", "candidates"):
         assert (job_dir / folder).is_dir()
+    assert (job_dir / "spec/v1").is_dir()
+
+
+def test_files_can_be_saved_straight_to_the_returned_paths(ws):
+    saved_spec(ws)
+    out = in_ws(ws, "job", *ACME, "--create")
+    assert out["next_spec_version"] == 2
+    Path(out["outputs"]["spec_json"]).write_text("{}")
+    Path(out["outputs"]["changes_from_previous"]).write_text("x")
+
+
+def test_job_without_create_makes_no_version_folder(ws):
+    saved_spec(ws)
+    assert not Path(in_ws(ws, "job", *ACME)["outputs"]["spec_json"]).parent.exists()
+
+
+def test_an_unsaved_version_folder_does_not_use_up_a_version(ws):
+    in_ws(ws, "job", *ACME, "--create")
+    assert in_ws(ws, "job", *ACME)["next_spec_version"] == 1
 
 
 def test_job_uses_the_client_match_list(ws):
@@ -453,9 +471,7 @@ def test_repeat_job_reports_existing_and_next_version(ws):
 
 def test_next_version_never_reuses_a_saved_spec_even_if_unrecorded(ws):
     job = in_ws(ws, "job", *ACME, "--create")
-    path = Path(job["outputs"]["spec_json"])
-    path.parent.mkdir(parents=True)
-    path.write_text("{}")
+    Path(job["outputs"]["spec_json"]).write_text("{}")
     assert in_ws(ws, "job", *ACME)["next_spec_version"] == 2
 
 
@@ -907,6 +923,36 @@ def test_candidate_without_create_reserves_nothing(ws):
     in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe")
     job_dir = Path(in_ws(ws, "job", *ACME)["job_dir"])
     assert list((job_dir / "candidates").iterdir()) == []
+
+
+# File permissions
+
+
+def run_with_umask(umask, *args):
+    command = [sys.executable, str(SCRIPT), *map(str, args)]
+    done = subprocess.run(
+        command, capture_output=True, text=True, preexec_fn=lambda: os.umask(umask)
+    )
+    assert done.returncode == 0, done.stdout
+    return json.loads(done.stdout)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+@pytest.mark.parametrize(("umask", "mode"), [(0o022, 0o644), (0o002, 0o664), (0o077, 0o600)])
+def test_scripts_write_files_with_the_normal_permissions(tmp_path, umask, mode):
+    root = tmp_path / "w"
+    run_with_umask(umask, "init", "--path", root)
+    out = run_with_umask(umask, "job", *ACME, "--create", "--workspace", root)
+    assert (root / "fitmark.yaml").stat().st_mode & 0o777 == mode
+    assert (Path(out["job_dir"]) / "job.yaml").stat().st_mode & 0o777 == mode
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_changing_a_job_keeps_its_permissions(ws):
+    job_file = Path(in_ws(ws, "job", *ACME, "--create")["job_dir"]) / "job.yaml"
+    job_file.chmod(0o660)
+    in_ws(ws, "record", "--job", ACME_ID, "--event", "status", "--status", "confirmed")
+    assert job_file.stat().st_mode & 0o777 == 0o660
 
 
 # Encoding
