@@ -1,6 +1,7 @@
 """Behaviour of scripts/workspace.py, run the way a skill runs it: as a subprocess."""
 
 import json
+import os
 import subprocess
 import sys
 from datetime import date
@@ -722,6 +723,241 @@ def test_status_open_hides_closed_jobs(ws):
     in_ws(ws, "record", "--job", ACME_ID, "--event", "status", "--status", "filled")
     assert in_ws(ws, "status")["jobs"]
     assert in_ws(ws, "status", "--open")["jobs"] == []
+
+
+# A bad job file (finding: one file must not block the workspace)
+
+
+def other_job(ws, content):
+    folder = ws / "clients" / "other" / "broken"
+    folder.mkdir(parents=True)
+    (folder / "job.yaml").write_text(content)
+    return folder / "job.yaml"
+
+
+BAD_JOB_FILES = [
+    "{}",
+    "spec_id: z\n",
+    "[]",
+    '{"spec_id": 1}',
+    json.dumps(
+        {
+            "spec_id": "s", "client": "c", "client_slug": "c", "job_slug": "j", "role": "r",
+            "status": "intake", "current_spec_version": "1", "submittals": [],
+        }
+    ),
+    json.dumps(
+        {
+            "spec_id": "s", "client": "c", "client_slug": "c", "job_slug": "j", "role": "r",
+            "status": "intake", "current_spec_version": 1, "submittals": [{}],
+        }
+    ),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("content", BAD_JOB_FILES)
+def test_a_bad_job_file_does_not_block_other_jobs(ws, content):
+    saved_spec(ws)
+    bad = other_job(ws, content)
+    assert in_ws(ws, "job", *ACME)["exists"] is True
+    assert in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe")["spec_version"] == 1
+    out = in_ws(ws, "status")
+    assert [j["spec_id"] for j in out["jobs"]] == [ACME_ID]
+    assert [u["path"] for u in out["unreadable_jobs"]] == [str(bad.resolve())]
+
+
+@pytest.mark.parametrize("content", BAD_JOB_FILES)
+def test_asking_for_the_bad_job_itself_is_a_json_error(ws, content):
+    bad = other_job(ws, content)
+    code, out = run("job", "--client", "Other", "--role", "Broken", "--create", "--workspace", ws)
+    assert code == 1
+    assert out["code"] == "bad_job_file"
+    assert bad.read_text() == content
+
+
+def test_a_missing_job_mentions_unreadable_files(ws):
+    other_job(ws, "{}")
+    code, out = run("record", "--job", "nope", "--event", "status", "--status", "closed",
+                    "--workspace", ws)  # fmt: skip
+    assert code == 1
+    assert out["code"] == "unknown_job"
+    assert "job.yaml" in out["error"]
+
+
+# Passing the folder setting safely
+
+
+def resolve_through_shell(value, tmp_path):
+    """Run the documented Start step in a real shell, with the setting substituted as text."""
+    command = (
+        f'"{sys.executable}" "{SCRIPT}" resolve --workspace-stdin <<\'FITMARK_WORKSPACE\'\n'
+        f"{value}\nFITMARK_WORKSPACE\n"
+    )
+    done = subprocess.run(
+        ["/bin/sh", "-c", command],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_a_setting_with_an_apostrophe_reaches_the_script_intact(tmp_path):
+    folder = tmp_path / "Recruiter's Files"
+    assert resolve_through_shell(folder, tmp_path)["suggested_path"] == str(folder.resolve())
+
+
+def test_a_setting_cannot_run_a_command(tmp_path):
+    out = resolve_through_shell("x'; touch pwned; '$(touch pwned)`touch pwned`", tmp_path)
+    assert out["status"] == "no_workspace"
+    assert not (tmp_path / "pwned").exists()
+
+
+@pytest.mark.parametrize("value", ["", "${user_config.workspace}"])
+def test_an_unset_setting_through_the_shell_counts_as_unset(tmp_path, value):
+    out = resolve_through_shell(value, tmp_path)
+    assert out["suggested_path"] == str(tmp_path.resolve() / "Fitmark")
+
+
+def test_a_setting_of_several_lines_is_refused(tmp_path):
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "resolve", "--workspace-stdin"],
+        input="one\ntwo\n",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert done.returncode == 1
+    assert json.loads(done.stdout)["code"] == "bad_setting"
+
+
+# Running at the same time
+
+
+def start(*args):
+    return subprocess.Popen(
+        [sys.executable, str(SCRIPT), *map(str, args)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def test_parallel_records_lose_nothing(ws):
+    saved_spec(ws)
+    job_dir = Path(in_ws(ws, "job", *ACME)["job_dir"])
+    names = [f"person-{n}" for n in range(12)]
+    for name in names:
+        folder = job_dir / "candidates" / name
+        folder.mkdir()
+        (folder / "submittal-s1.json").write_text("{}")
+    running = [
+        start("record", "--job", ACME_ID, "--event", "submittal_saved", "--candidate", name,
+              "--file", "submittal-s1.json", "--workspace", ws)
+        for name in names
+    ]  # fmt: skip
+    for process in running:
+        _, err = process.communicate()
+        assert process.returncode == 0, err
+    job = json.loads((job_dir / "job.yaml").read_text())
+    assert sorted(s["candidate"] for s in job["submittals"]) == sorted(names)
+    assert not (job_dir / ".job.lock").exists()
+
+
+def test_parallel_candidates_get_different_paths(ws):
+    saved_spec(ws)
+    running = [
+        start("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--workspace", ws)
+        for _ in range(12)
+    ]
+    results = []
+    for process in running:
+        out, err = process.communicate()
+        assert process.returncode == 0, err
+        results.append(json.loads(out))
+    assert len({r["submittal_path"] for r in results}) == 12
+    assert len({r["document_path"] for r in results}) == 12
+
+
+def test_a_stale_lock_does_not_block_recording(ws):
+    saved_spec(ws)
+    lock = Path(in_ws(ws, "job", *ACME)["job_dir"]) / ".job.lock"
+    lock.write_text("")
+    os.utime(lock, (1, 1))
+    out = in_ws(ws, "record", "--job", ACME_ID, "--event", "status", "--status", "confirmed")
+    assert out["job"]["status"] == "confirmed"
+
+
+def test_a_reserved_empty_submittal_cannot_be_recorded(ws):
+    saved_spec(ws)
+    cand = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create")
+    assert Path(cand["submittal_path"]).stat().st_size == 0
+    code, out = run(
+        "record", "--job", ACME_ID, "--event", "submittal_saved", "--candidate", "jane-doe",
+        "--file", "submittal-s1.json", "--workspace", ws,
+    )  # fmt: skip
+    assert code == 1
+    assert out["code"] == "missing_file"
+
+
+def test_candidate_without_create_reserves_nothing(ws):
+    saved_spec(ws)
+    in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe")
+    job_dir = Path(in_ws(ws, "job", *ACME)["job_dir"])
+    assert list((job_dir / "candidates").iterdir()) == []
+
+
+# Encoding
+
+
+LATIN1 = {"LC_ALL": "en_US.ISO8859-1", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+
+
+def test_non_ascii_names_work_under_a_non_utf8_locale(ws):
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "job", "--client", "株式会社", "--role", "Dev",
+         "--create", "--workspace", str(ws)],
+        capture_output=True,
+        env={"HOME": str(ws), "PATH": "", **LATIN1},
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout.decode("utf-8"))
+    job = json.loads((Path(out["job_dir"]) / "job.yaml").read_text(encoding="utf-8"))
+    assert job["client"] == "株式会社"
+
+
+def test_a_failed_write_leaves_no_temp_file(ws):
+    job_dir = ws / "clients" / "acme" / "dev"
+    (job_dir / "job.yaml").mkdir(parents=True)
+    code, out = run("job", "--client", "Acme", "--role", "Dev", "--create", "--workspace", ws)
+    assert code == 1
+    assert out["error"]
+    assert [p.name for p in job_dir.glob(".*")] == []
+
+
+def test_a_client_file_that_is_not_utf8_only_loses_its_own_rules(ws):
+    (ws / "agency/clients/latin.yaml").write_bytes("match: [Soci\xe9t\xe9]\n".encode("latin-1"))
+    assert in_ws(ws, "job", *ACME)["client_slug"] == "acme-corp"
+    assert in_ws(ws, "job", "--client", "Latin", "--role", "Dev")["client_slug"] == "latin"
+
+
+# Client match lists
+
+
+def test_inline_match_list_respects_quotes(ws):
+    (ws / "agency/clients/globex.yaml").write_text("match: [\"Globex, Inc\", 'A, B', Globex]\n")
+    for client in ("Globex, Inc", "A, B", "Globex"):
+        assert in_ws(ws, "job", "--client", client, "--role", "Dev")["client_slug"] == "globex"
+    assert in_ws(ws, "job", "--client", "Inc", "--role", "Dev")["client_slug"] == "inc"
+
+
+@pytest.mark.parametrize("text", ['match:\n  - "&"\n  - Acme Corp\n', 'match: ["&", Acme Corp]\n'])
+def test_an_unusable_match_entry_is_skipped(ws, text):
+    (ws / "agency/clients/acme.yaml").write_text(text)
+    assert in_ws(ws, "job", *ACME)["client_slug"] == "acme"
+    assert in_ws(ws, "job", "--client", "Other", "--role", "Dev")["client_slug"] == "other"
 
 
 # Script contract

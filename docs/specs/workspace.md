@@ -11,6 +11,10 @@ Acceptance criteria for the workspace layer. Status boxes reflect what has been 
 - [x] A person's case file can't silently receive another person's work: a shared name must be addressed with `--slug`, and retrying `--new` doesn't create another person.
 - [x] Spec versions and submittals never overwrite an earlier file.
 - [x] `job.yaml` and `fitmark.yaml` match their schemas and parse as YAML.
+- [x] A bad `job.yaml` blocks only its own job, and `status` reports it.
+- [x] Parallel runs lose no recorded submittal and never share a candidate output path.
+- [x] A folder setting containing quotes reaches the script intact and can't run a command.
+- [x] Files are UTF-8 under any locale, and a failed write leaves no temp file.
 
 ## Plugin integration
 

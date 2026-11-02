@@ -75,11 +75,19 @@ def test_skill_gets_its_paths_from_the_workspace_script(name):
     assert "resolve" in text
 
 
-def test_folder_setting_is_never_double_quoted_for_the_shell():
-    # With no saved value the text stays literal, and "${user_config.x}" is a shell error.
+def test_folder_setting_is_never_quoted_for_the_shell():
+    # The value is substituted as text. A quote in it would end a quoted argument, so it reaches
+    # the script through a quoted heredoc. Double quotes also fail outright with no saved value.
     files = [ROOT / "docs" / "SKILL_GUIDELINES.md", *(ROOT / "skills").glob("*/SKILL.md")]
     for path in files:
-        assert '"${user_config.' not in path.read_text(), path
+        text = path.read_text()
+        assert '"${user_config.' not in text, path
+        assert "'${user_config." not in text, path
+
+
+def test_guidelines_pass_the_folder_setting_through_stdin():
+    text = (ROOT / "docs" / "SKILL_GUIDELINES.md").read_text()
+    assert "--workspace-stdin <<'FITMARK_WORKSPACE'" in text
 
 
 @pytest.mark.parametrize("path", sorted((ROOT / "schemas").glob("*.json")), ids=lambda p: p.name)

@@ -6,7 +6,9 @@ The workspace is never allowed inside the plugin root or plugin data folder.
 """
 
 import argparse
+import contextlib
 import datetime
+import itertools
 import json
 import os
 import re
@@ -22,6 +24,9 @@ DEFAULT_WORKSPACE = "~/Fitmark"
 SCRIPT_PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATUSES = ("intake", "spec_sent", "confirmed", "on_hold", "filled", "closed")
 CLOSED_STATUSES = ("filled", "closed")
+LOCK_FILE = ".job.lock"
+LOCK_WAIT_SECONDS = 10
+LOCK_STALE_SECONDS = 60
 SUBMITTAL_FILE = re.compile(r"submittal-s(\d+)(?:-\d+)?\.json")
 
 
@@ -100,7 +105,7 @@ def remembered_workspace(args):
     if not is_set(args.plugin_data):
         return None
     try:
-        saved = json.loads((full_path(args.plugin_data) / REMEMBERED).read_text())
+        saved = json.loads((full_path(args.plugin_data) / REMEMBERED).read_text(encoding="utf-8"))
         root, setting = full_path(saved["root"]), saved["setting"]
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -138,16 +143,77 @@ def require_workspace(args):
 
 def write_atomic(path, text):
     handle, temp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
-    with os.fdopen(handle, "w") as stream:
-        stream.write(text)
-    os.replace(temp, path)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.replace(temp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+        raise
+
+
+@contextlib.contextmanager
+def job_lock(job_file):
+    """Let one process at a time read, change and replace a job file."""
+    lock = job_file.parent / LOCK_FILE
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            with contextlib.suppress(FileNotFoundError):
+                if time.time() - lock.stat().st_mtime > LOCK_STALE_SECONDS:
+                    lock.unlink()
+                    continue
+            if time.monotonic() > deadline:
+                raise FitmarkError(
+                    "job_locked", f"{job_file} is being changed by another run; try again"
+                ) from None
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            lock.unlink()
+
+
+def job_problem(job):
+    """Return what is wrong with a parsed job file, or None. Keeps the script dependency-free."""
+    if not isinstance(job, dict):
+        return "it is not a job object"
+    for key in ("spec_id", "client", "client_slug", "job_slug", "role", "status"):
+        if not isinstance(job.get(key), str) or not job[key]:
+            return f"{key} must be text"
+    if not re.search(r"\w", job["client"]):
+        return "client has no letters or digits"
+    version = job.get("current_spec_version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        return "current_spec_version must be a number"
+    submittals = job.get("submittals")
+    if not isinstance(submittals, list):
+        return "submittals must be a list"
+    for item in submittals:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("candidate"), str)
+            or not isinstance(item.get("file"), str)
+            or not isinstance(item.get("spec_version"), int)
+        ):
+            return "a submittal entry is incomplete"
+    return None
 
 
 def read_job(path):
     try:
-        return json.loads(path.read_text())
-    except ValueError as error:
+        job = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as error:
         raise FitmarkError("bad_job_file", f"{path} cannot be read: {error}") from error
+    problem = job_problem(job)
+    if problem:
+        raise FitmarkError("bad_job_file", f"{path} cannot be read: {problem}")
+    return job
 
 
 def write_job(path, job):
@@ -155,33 +221,52 @@ def write_job(path, job):
     write_atomic(path, json.dumps(job, indent=2, ensure_ascii=False) + "\n")
 
 
-def all_jobs(root):
+def all_jobs(root, unreadable=None):
+    """Yield every readable job. One bad file must not stop work on the others."""
     for path in sorted((root / "clients").glob("*/*/job.yaml")):
-        yield path, read_job(path)
+        try:
+            yield path, read_job(path)
+        except FitmarkError as error:
+            if unreadable is not None:
+                unreadable.append({"path": str(path), "error": str(error)})
 
 
 def find_job(root, spec_id):
-    for path, job in all_jobs(root):
+    unreadable = []
+    for path, job in all_jobs(root, unreadable):
         if job["spec_id"] == spec_id:
             return path, job
-    raise FitmarkError("unknown_job", f"No job with spec_id {spec_id}")
+    note = f"; could not read {', '.join(u['path'] for u in unreadable)}" if unreadable else ""
+    raise FitmarkError("unknown_job", f"No job with spec_id {spec_id}{note}")
 
 
 def match_names(text):
     inline = re.search(r"^match:\s*\[(.*)\]\s*$", text, re.M)
     if inline:
-        items = inline[1].split(",")
+        items = re.findall(r"\"[^\"]*\"|'[^']*'|[^,\s][^,]*", inline[1])
     else:
         block = re.search(r"^match:\s*\n((?:[ \t]*-[ \t]*.+\n?)+)", text, re.M)
         items = re.findall(r"-[ \t]*(.+)", block[1]) if block else []
     return [item.strip().strip("\"'") for item in items if item.strip()]
 
 
+def rule_slugs(path):
+    """Return the client slugs one rule file matches, ignoring anything unusable in it."""
+    try:
+        names = match_names(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        return []
+    slugs = []
+    for name in names:
+        with contextlib.suppress(FitmarkError):
+            slugs.append(slug(name, "client"))
+    return slugs
+
+
 def client_slug(root, name):
     wanted = slug(name, "client")
     for path in sorted((root / "agency" / "clients").glob("*.yaml")):
-        names = match_names(path.read_text())
-        if wanted == path.stem or wanted in [slug(n, "client") for n in names]:
+        if wanted == path.stem or wanted in rule_slugs(path):
             return path.stem
     return wanted
 
@@ -208,14 +293,22 @@ def saved_versions(job_dir):
     return versions
 
 
-def free_path(folder, stem, suffix):
-    """Return folder/stem+suffix, adding -2, -3 and so on until nothing would be overwritten."""
-    path = folder / f"{stem}{suffix}"
-    number = 2
-    while path.exists():
-        path = folder / f"{stem}-{number}{suffix}"
-        number += 1
-    return path
+def free_path(folder, stem, suffix, reserve=False):
+    """Return folder/stem+suffix, adding -2, -3 and so on until nothing would be overwritten.
+
+    With reserve, also create it empty, so a run happening at the same time gets another name.
+    """
+    for number in itertools.count(1):
+        path = folder / (f"{stem}{suffix}" if number == 1 else f"{stem}-{number}{suffix}")
+        if path.exists():
+            continue
+        if not reserve:
+            return path
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return path
+        except FileExistsError:
+            continue
 
 
 def cmd_init(args):
@@ -279,18 +372,21 @@ def cmd_job(args):
     if args.create:
         for folder in subfolders:
             folder.mkdir(parents=True, exist_ok=True)
-        if not exists:
-            job = {
-                "spec_id": spec_id,
-                "client": args.client,
-                "client_slug": client,
-                "job_slug": role,
-                "role": args.role,
-                "status": "intake",
-                "current_spec_version": 0,
-                "submittals": [],
-            }
-            write_job(job_file, job)
+        with job_lock(job_file):
+            if job_file.is_file():
+                exists, job = True, read_job(job_file)
+            elif not exists:
+                job = {
+                    "spec_id": spec_id,
+                    "client": args.client,
+                    "client_slug": client,
+                    "job_slug": role,
+                    "role": args.role,
+                    "status": "intake",
+                    "current_spec_version": 0,
+                    "submittals": [],
+                }
+                write_job(job_file, job)
 
     client_name = readable(job["client"] if job else args.client)
     role_name = readable(job["role"] if job else args.role)
@@ -379,6 +475,8 @@ def cmd_candidate(args):
     exists = folder.is_dir()
     if args.create:
         (folder / "source").mkdir(parents=True, exist_ok=True)
+        submittal = free_path(folder, f"submittal-s{version}", ".json", reserve=True)
+        document = free_path(folder, title, ".docx", reserve=True)
     return {
         "exists": exists,
         "slug": folder.name,
@@ -408,8 +506,9 @@ def record_submittal(args, job_file, job):
     parsed = SUBMITTAL_FILE.fullmatch(name)
     if not parsed:
         raise FitmarkError("bad_file", f"{name} is not a submittal file name")
-    if not (job_file.parent / "candidates" / candidate / name).is_file():
-        raise FitmarkError("missing_file", f"{candidate}/{name} does not exist")
+    saved = job_file.parent / "candidates" / candidate / name
+    if not saved.is_file() or saved.stat().st_size == 0:
+        raise FitmarkError("missing_file", f"{candidate}/{name} has not been written")
     if not any(s["candidate"] == candidate and s["file"] == name for s in job["submittals"]):
         job["submittals"].append(
             {
@@ -436,9 +535,11 @@ RECORDERS = {
 
 def cmd_record(args):
     root = require_workspace(args)
-    job_file, job = find_job(root, args.job)
-    RECORDERS[args.event](args, job_file, job)
-    write_job(job_file, job)
+    job_file, _ = find_job(root, args.job)
+    with job_lock(job_file):
+        job = read_job(job_file)
+        RECORDERS[args.event](args, job_file, job)
+        write_job(job_file, job)
     return {"job": job, "job_yaml": str(job_file)}
 
 
@@ -459,18 +560,24 @@ def cmd_status(args):
     root = require_workspace(args)
     wanted = client_slug(root, args.client) if args.client else None
     jobs = []
-    for _, job in all_jobs(root):
+    unreadable = []
+    for _, job in all_jobs(root, unreadable):
         if wanted and client_slug(root, job["client"]) != wanted:
             continue
         if args.open and job["status"] in CLOSED_STATUSES:
             continue
         jobs.append({**job, "stale_submittals": stale_submittals(job)})
-    return {"root": str(root), "jobs": jobs}
+    return {"root": str(root), "jobs": jobs, "unreadable_jobs": unreadable}
 
 
 def build_parser():
     common = JsonParser(add_help=False)
     common.add_argument("--workspace", default="", help="the Fitmark folder setting")
+    common.add_argument(
+        "--workspace-stdin",
+        action="store_true",
+        help="read the folder setting from stdin, for values substituted into a command as text",
+    )
     common.add_argument("--plugin-root", default="")
     common.add_argument("--plugin-data", default="")
 
@@ -517,15 +624,30 @@ def build_parser():
     return parser
 
 
+def read_setting_from_stdin():
+    value = sys.stdin.read().strip("\r\n")
+    if "\n" in value:
+        raise FitmarkError("bad_setting", "The Fitmark folder setting must be one line")
+    return value
+
+
 def main(argv=None):
+    # Output is always UTF-8 JSON, whatever the locale.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stdin.reconfigure(encoding="utf-8", errors="surrogateescape")
     args = build_parser().parse_args(argv)
     try:
+        if args.workspace_stdin:
+            args.workspace = read_setting_from_stdin()
         result = args.handler(args)
     except FitmarkError as error:
         print(json.dumps({"error": str(error), "code": error.code}, ensure_ascii=False))
         return 1
     except OSError as error:
         print(json.dumps({"error": str(error), "code": "os_error"}, ensure_ascii=False))
+        return 1
+    except UnicodeError as error:
+        print(json.dumps({"error": str(error), "code": "bad_encoding"}, ensure_ascii=False))
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
