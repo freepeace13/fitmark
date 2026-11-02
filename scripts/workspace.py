@@ -34,7 +34,7 @@ STATUSES = ("intake", "spec_sent", "confirmed", "on_hold", "filled", "closed")
 CLOSED_STATUSES = ("filled", "closed")
 LOCK_FILE = ".job.lock"
 LOCK_WAIT_SECONDS = 10
-REF_FILE = ".person-ref"
+REF_FILE = ".ref"  # in a claimed folder: which person or run it belongs to
 SUBMITTAL_FILE = re.compile(r"submittal-s(\d+)(?:-\d+)?\.json")
 
 
@@ -50,15 +50,30 @@ class JsonParser(argparse.ArgumentParser):
         sys.exit(2)
 
 
+def plain_letters(text):
+    """Fold Latin accents, which are often left out of a name. Other marks change the word."""
+    kept = []
+    base = ""
+    for char in unicodedata.normalize("NFKD", text):
+        if not unicodedata.category(char).startswith("M"):
+            base = char
+            kept.append(char)
+        elif base and not unicodedata.name(base, "").startswith("LATIN"):
+            kept.append(char)
+    return "".join(kept).casefold()
+
+
 def slug(text, what="name"):
-    plain = unicodedata.normalize("NFKD", text)
-    plain = "".join(c for c in plain if not unicodedata.combining(c)).casefold()
+    plain = plain_letters(text)
     # Symbols that tell names apart become words: C++, C# and C must not share a folder.
     plain = re.sub(r"(?<=[\w+])\+", "-plus-", plain)
     plain = re.sub(r"(?<=\w)#", "-sharp-", plain)
     plain = re.sub(r"(?<![\w.])\.(?=\w)", "dot-", plain)
     plain = re.sub(r"(?<=\w)\s*&\s*(?=\w)", "-and-", plain)
-    result = re.sub(r"[\W_]+", "-", plain).strip("-")
+    plain = "".join(
+        c if c.isalnum() or unicodedata.category(c).startswith("M") else "-" for c in plain
+    )
+    result = unicodedata.normalize("NFC", re.sub(r"-+", "-", plain).strip("-"))
     if not result:
         raise FitmarkError("bad_name", f"{what} {text!r} has no letters or digits")
     return result
@@ -343,11 +358,17 @@ def client_slug(root, name):
 
 def matching_job(root, client, role, client_name):
     """Find a job by what the client's rules say now, so a later rule doesn't orphan it."""
+    unreadable = []
     jobs = [
         (path, job)
-        for path, job in all_jobs(root)
+        for path, job in all_jobs(root, unreadable)
         if job["job_slug"] == role and client_slug(root, job["client"]) == client
     ]
+    # Starting afresh next to what may be this very job would fork its history.
+    for item in unreadable:
+        job_dir = Path(item["path"]).parent
+        if not jobs and job_dir.name == role and client_slug(root, job_dir.parent.name) == client:
+            raise FitmarkError("bad_job_file", item["error"])
     # If a rule has joined two folders, the job created under this exact name comes first.
     wanted = slug(client_name, "client")
     jobs.sort(key=lambda item: slug(item[1]["client"], "client") != wanted)
@@ -362,13 +383,34 @@ def is_saved(path):
         return False
 
 
-def saved_versions(job_dir):
-    versions = []
-    for path in (job_dir / "spec").glob("v*/spec.json"):
-        number = path.parent.name[1:]
-        if number.isdecimal() and is_saved(path):
-            versions.append(int(number))
-    return versions
+def version_folders(job_dir):
+    """Return {number: folder} for every spec version folder, saved or only claimed."""
+    folders = {}
+    for path in (job_dir / "spec").glob("v*"):
+        number = path.name[1:]
+        if number.isdecimal() and path.is_dir():
+            folders[int(number)] = path
+    return folders
+
+
+def folder_ref(folder):
+    try:
+        return (folder / REF_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def has_work(folder):
+    return any(p.name != REF_FILE and is_saved(p) for p in folder.iterdir())
+
+
+def next_version(job_dir, ref):
+    """The unused version this ref already claimed, otherwise one above every claimed version."""
+    folders = version_folders(job_dir)
+    for number, folder in sorted(folders.items()):
+        if ref and folder_ref(folder) == ref and not has_work(folder):
+            return number
+    return max(folders, default=0) + 1
 
 
 def free_path(folder, stem, suffix, reserve=False):
@@ -383,7 +425,7 @@ def free_path(folder, stem, suffix, reserve=False):
         if not reserve:
             return path
         try:
-            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666))
             return path
         except FileExistsError:
             continue
@@ -424,6 +466,8 @@ def cmd_resolve(args):
 
 
 def cmd_job(args):
+    if args.create and not args.ref:
+        raise FitmarkError("usage", "--create needs --ref, which stays the same across retries")
     root = require_workspace(args)
     client = client_slug(root, args.client)
     role = slug(args.role, "role")
@@ -431,30 +475,26 @@ def cmd_job(args):
     if found:
         client, spec_id, job_dir = found_job["client_slug"], found_job["spec_id"], found.parent
     else:
-        spec_id = f"{client}-{role}"
+        # Slugs never contain a double hyphen, so no two jobs can join to the same id.
+        spec_id = f"{client}--{role}"
         job_dir = root / "clients" / client / role
     job_file = job_dir / "job.yaml"
-
-    for path, job in all_jobs(root):
-        if job["spec_id"] == spec_id and path != job_file:
-            raise FitmarkError("spec_id_clash", f"{spec_id} is already used by {path.parent}")
-
-    version = max(saved_versions(guard(full_path(job_dir), args)), default=0) + 1
-    spec_dir = job_dir / "spec" / f"v{version}"
+    guard(full_path(job_dir), args)
     subfolders = [job_dir / "intake", job_dir / "spec", job_dir / "candidates"]
-    for folder in (*subfolders, spec_dir):
+    for folder in subfolders:
         guard(full_path(folder), args)
 
     exists = job_file.is_file()
     job = read_job(job_file) if exists else None
+    version = next_version(job_dir, args.ref)
     if args.create:
         for folder in subfolders:
             folder.mkdir(parents=True, exist_ok=True)
-        spec_dir.mkdir(exist_ok=True)
+        # Parallel runs must not get the same version, or one would overwrite the other's files.
         with job_lock(job_file):
             if job_file.is_file():
                 exists, job = True, read_job(job_file)
-            elif not exists:
+            else:
                 job = {
                     "spec_id": spec_id,
                     "client": args.client,
@@ -466,7 +506,12 @@ def cmd_job(args):
                     "submittals": [],
                 }
                 write_job(job_file, job)
+            version = next_version(job_dir, args.ref)
+            spec_dir = guard(full_path(job_dir / "spec" / f"v{version}"), args)
+            spec_dir.mkdir(exist_ok=True)
+            write_atomic(spec_dir / REF_FILE, args.ref)
 
+    spec_dir = job_dir / "spec" / f"v{version}"
     client_name = readable(job["client"] if job else args.client)
     role_name = readable(job["role"] if job else args.role)
     outputs = {
@@ -476,8 +521,14 @@ def cmd_job(args):
         "intake_dir": str(job_dir / "intake"),
         "job_yaml": str(job_file),
     }
-    if version > 1:
-        outputs["changes_from_previous"] = str(spec_dir / f"changes-from-v{version - 1}.md")
+    saved = [
+        number
+        for number, folder in version_folders(job_dir).items()
+        if number < version and is_saved(folder / "spec.json")
+    ]
+    if saved:
+        outputs["changes_from_previous"] = str(spec_dir / f"changes-from-v{max(saved)}.md")
+    guard(full_path(spec_dir), args)
     for path in outputs.values():
         guard(full_path(path), args)
     return {
@@ -507,13 +558,6 @@ def same_name_folders(candidates, base):
     return [path for _, path in sorted(found)]
 
 
-def person_ref(folder):
-    try:
-        return (folder / REF_FILE).read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return None
-
-
 def choose_candidate_folder(args, candidates, base):
     folders = same_name_folders(candidates, base)
     names = [path.name for path in folders]
@@ -526,7 +570,7 @@ def choose_candidate_folder(args, candidates, base):
     if args.new:
         # The same ref is a retry for the same person; only an empty folder couldn't say which.
         for folder in folders:
-            if person_ref(folder) == args.ref:
+            if folder_ref(folder) == args.ref:
                 return folder
         return free_path(candidates, base, "")
     if len(folders) > 1:
@@ -535,7 +579,7 @@ def choose_candidate_folder(args, candidates, base):
             f"More than one person is called {args.name}: {', '.join(names)}. "
             "Say which with --slug, or use --new for someone else.",
         )
-    return candidates / base
+    return folders[0] if folders else candidates / base
 
 
 def cmd_candidate(args):
@@ -607,7 +651,7 @@ def submittal_candidate(args, candidates):
             "ambiguous_candidate",
             f"More than one person is called {args.candidate}: {', '.join(names)}",
         )
-    return base
+    return names[0] if names else base
 
 
 def record_submittal(args, job_file, job):
@@ -687,9 +731,9 @@ def build_parser():
     common = JsonParser(add_help=False)
     common.add_argument("--workspace", default="", help="the Fitmark folder setting")
     common.add_argument(
-        "--workspace-stdin",
+        "--args-stdin",
         action="store_true",
-        help="read the folder setting from stdin, for values substituted into a command as text",
+        help="read option values from a JSON object on stdin, so no value passes through a shell",
     )
     common.add_argument("--plugin-root", default="")
     common.add_argument("--plugin-data", default="")
@@ -712,6 +756,7 @@ def build_parser():
     job.add_argument("--client", required=True)
     job.add_argument("--role", required=True)
     job.add_argument("--create", action="store_true")
+    job.add_argument("--ref", help="with --create: something stable that identifies this run")
 
     candidate = add("candidate", cmd_candidate)
     candidate.add_argument("--job", required=True, help="spec_id")
@@ -738,11 +783,25 @@ def build_parser():
     return parser
 
 
-def read_setting_from_stdin():
-    value = sys.stdin.read().strip("\r\n") if sys.stdin else ""
-    if "\n" in value:
-        raise FitmarkError("bad_setting", "The Fitmark folder setting must be one line")
-    return value
+def stdin_arguments():
+    """Turn a JSON object on stdin into options. Text stays one value, whatever it contains."""
+    try:
+        values = json.loads(sys.stdin.read()) if sys.stdin else None
+    except (ValueError, OSError) as error:
+        raise FitmarkError("bad_args", f"--args-stdin needs a JSON object: {error}") from error
+    if not isinstance(values, dict):
+        raise FitmarkError("bad_args", "--args-stdin needs a JSON object")
+    options = []
+    for key, value in values.items():
+        if not re.fullmatch(r"[a-z][a-z-]*", key):
+            raise FitmarkError("bad_args", f"{key!r} is not an option name")
+        if value is True:
+            options.append(f"--{key}")
+        elif isinstance(value, (str, int)) and value is not False:
+            options.append(f"--{key}={value}")
+        elif value is not False:
+            raise FitmarkError("bad_args", f"{key} must be text, a number or true or false")
+    return options
 
 
 def main(argv=None):
@@ -751,10 +810,13 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if sys.stdin:
         sys.stdin.reconfigure(encoding="utf-8", errors="surrogateescape")
-    args = build_parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        if args.workspace_stdin:
-            args.workspace = read_setting_from_stdin()
+        if "--args-stdin" in argv:
+            argv += stdin_arguments()
+        args = build_parser().parse_args(argv)
+        if re.search(r"[\r\n]", args.workspace):
+            raise FitmarkError("bad_setting", "The Fitmark folder setting must be one line")
         result = args.handler(args)
     except FitmarkError as error:
         print(json.dumps({"error": str(error), "code": error.code}, ensure_ascii=False))
