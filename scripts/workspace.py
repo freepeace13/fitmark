@@ -8,6 +8,7 @@ The workspace is never allowed inside the plugin root or plugin data folder.
 import argparse
 import contextlib
 import datetime
+import errno
 import itertools
 import json
 import os
@@ -19,6 +20,12 @@ import time
 import unicodedata
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
+
 MARKER = "fitmark.yaml"
 REMEMBERED = "workspace.json"  # in the plugin data folder: which folder was chosen at first use
 DEFAULT_WORKSPACE = "~/Fitmark"
@@ -27,7 +34,7 @@ STATUSES = ("intake", "spec_sent", "confirmed", "on_hold", "filled", "closed")
 CLOSED_STATUSES = ("filled", "closed")
 LOCK_FILE = ".job.lock"
 LOCK_WAIT_SECONDS = 10
-LOCK_STALE_SECONDS = 60
+REF_FILE = ".person-ref"
 SUBMITTAL_FILE = re.compile(r"submittal-s(\d+)(?:-\d+)?\.json")
 
 
@@ -70,12 +77,23 @@ def full_path(value):
     return Path(os.path.expanduser(value)).resolve()
 
 
+def is_inside(path, folder):
+    """Compare as the file system does, which may ignore case or accents in a name."""
+    for each in (path, *path.parents):
+        if str(each).casefold() == str(folder).casefold():
+            return True
+        with contextlib.suppress(OSError):
+            if os.path.samefile(each, folder):
+                return True
+    return False
+
+
 def guard(path, args):
     """Refuse any path inside the plugin root or plugin data folder."""
     protected = [SCRIPT_PLUGIN_ROOT]
     protected += [full_path(v) for v in (args.plugin_root, args.plugin_data) if is_set(v)]
     for folder in protected:
-        if path == folder or folder in path.parents:
+        if is_inside(path, folder):
             raise FitmarkError(
                 "inside_plugin", f"{path} is inside the plugin folder {folder}; choose another"
             )
@@ -166,30 +184,37 @@ def write_atomic(path, text):
         raise
 
 
+def try_lock(handle):
+    """Take an OS lock that ends when the handle closes. Returns False if another run holds it."""
+    try:
+        if fcntl:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)
+    except OSError as error:
+        if error.errno in (errno.EAGAIN, errno.EACCES, errno.EDEADLK):
+            return False
+        raise
+    return True
+
+
 @contextlib.contextmanager
 def job_lock(job_file):
     """Let one process at a time read, change and replace a job file."""
-    lock = job_file.parent / LOCK_FILE
+    # An OS lock ends with its process, so a crashed run can't leave it held. The file stays:
+    # deleting it would let one run lock a file another run has already replaced.
+    handle = os.open(job_file.parent / LOCK_FILE, os.O_CREAT | os.O_WRONLY, 0o666)
     deadline = time.monotonic() + LOCK_WAIT_SECONDS
-    while True:
-        try:
-            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-            break
-        except FileExistsError:
-            with contextlib.suppress(FileNotFoundError):
-                if time.time() - lock.stat().st_mtime > LOCK_STALE_SECONDS:
-                    lock.unlink()
-                    continue
+    try:
+        while not try_lock(handle):
             if time.monotonic() > deadline:
                 raise FitmarkError(
                     "job_locked", f"{job_file} is being changed by another run; try again"
-                ) from None
+                )
             time.sleep(0.02)
-    try:
         yield
     finally:
-        with contextlib.suppress(FileNotFoundError):
-            lock.unlink()
+        os.close(handle)
 
 
 def job_problem(job):
@@ -199,8 +224,10 @@ def job_problem(job):
     for key in ("spec_id", "client", "client_slug", "job_slug", "role", "status"):
         if not isinstance(job.get(key), str) or not job[key]:
             return f"{key} must be text"
-    if not re.search(r"\w", job["client"]):
-        return "client has no letters or digits"
+    try:
+        slug(job["client"], "client")
+    except FitmarkError as error:
+        return str(error)
     version = job.get("current_spec_version")
     if not isinstance(version, int) or isinstance(version, bool):
         return "current_spec_version must be a number"
@@ -253,13 +280,43 @@ def find_job(root, spec_id):
     raise FitmarkError("unknown_job", f"No job with spec_id {spec_id}{note}")
 
 
+def without_comment(line):
+    """Remove a YAML comment: a # at the start or after a space, outside quotes."""
+    quote = None
+    for index, char in enumerate(line):
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "\"'" and (index == 0 or not line[index - 1].isalnum()):
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index]
+    return line
+
+
 def match_names(text):
-    inline = re.search(r"^match:\s*\[(.*)\]\s*$", text, re.M)
-    if inline:
-        items = re.findall(r"\"[^\"]*\"|'[^']*'|[^,\s][^,]*", inline[1])
+    """Read the top-level match key: a name, a [flow, list] over any lines, or a block list."""
+    lines = [without_comment(line).rstrip() for line in text.splitlines()]
+    start = next((i for i, line in enumerate(lines) if re.match(r"match:(\s|$)", line)), None)
+    if start is None:
+        return []
+    value = lines[start][len("match:") :].strip()
+    rest = lines[start + 1 :]
+    if value.startswith("["):
+        for line in rest:
+            if value.endswith("]"):
+                break
+            value += " " + line.strip()
+        items = re.findall(r"\"[^\"]*\"|'[^']*'|[^,\s][^,]*", value[1:].rstrip("]"))
+    elif value:
+        items = [value]
     else:
-        block = re.search(r"^match:\s*\n((?:[ \t]*-[ \t]*.+\n?)+)", text, re.M)
-        items = re.findall(r"-[ \t]*(.+)", block[1]) if block else []
+        items = []
+        for line in rest:
+            entry = re.match(r"[ \t]*-[ \t]*(.+)", line)
+            if entry:
+                items.append(entry[1])
+            elif line.strip():
+                break
     return [item.strip().strip("\"'") for item in items if item.strip()]
 
 
@@ -267,7 +324,7 @@ def rule_slugs(path):
     """Return the client slugs one rule file matches, ignoring anything unusable in it."""
     try:
         names = match_names(path.read_text(encoding="utf-8"))
-    except UnicodeDecodeError:
+    except (UnicodeDecodeError, OSError):
         return []
     slugs = []
     for name in names:
@@ -297,11 +354,19 @@ def matching_job(root, client, role, client_name):
     return jobs[0] if jobs else (None, None)
 
 
+def is_saved(path):
+    """An empty file is a reserved name or a run that died, not saved work."""
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def saved_versions(job_dir):
     versions = []
     for path in (job_dir / "spec").glob("v*/spec.json"):
         number = path.parent.name[1:]
-        if number.isdigit():
+        if number.isdecimal() and is_saved(path):
             versions.append(int(number))
     return versions
 
@@ -442,8 +507,11 @@ def same_name_folders(candidates, base):
     return [path for _, path in sorted(found)]
 
 
-def has_content(folder):
-    return any(path.is_file() and path.stat().st_size for path in folder.rglob("*"))
+def person_ref(folder):
+    try:
+        return (folder / REF_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
 
 
 def choose_candidate_folder(args, candidates, base):
@@ -456,9 +524,10 @@ def choose_candidate_folder(args, candidates, base):
             )
         return candidates / args.slug
     if args.new:
-        # A retry must not make a third person: an unused -N folder is still free.
-        if len(folders) > 1 and not has_content(folders[-1]):
-            return folders[-1]
+        # The same ref is a retry for the same person; only an empty folder couldn't say which.
+        for folder in folders:
+            if person_ref(folder) == args.ref:
+                return folder
         return free_path(candidates, base, "")
     if len(folders) > 1:
         raise FitmarkError(
@@ -476,19 +545,28 @@ def cmd_candidate(args):
     if version < 1:
         raise FitmarkError("no_spec", f"{args.job} has no saved spec to assess against")
 
+    if bool(args.new) != bool(args.ref):
+        raise FitmarkError("usage", "--new and --ref go together: a ref says which person this is")
+
     base = slug(args.name, "candidate")
     candidates = job_file.parent / "candidates"
     guard(full_path(candidates), args)
-    folder = choose_candidate_folder(args, candidates, base)
     title = readable(f"{initials(args.name)} – {job['role']} – {job['client']} v{version}")
-    submittal = free_path(folder, f"submittal-s{version}", ".json")
-    document = free_path(folder, title, ".docx")
-    for path in (folder, folder / "source", submittal, document):
-        guard(full_path(path), args)
+    # Choosing a new person's folder and claiming it must be one step for parallel runs.
+    claiming = args.new and args.create
+    with job_lock(job_file) if claiming else contextlib.nullcontext():
+        folder = choose_candidate_folder(args, candidates, base)
+        submittal = free_path(folder, f"submittal-s{version}", ".json")
+        document = free_path(folder, title, ".docx")
+        for path in (folder, folder / "source", submittal, document):
+            guard(full_path(path), args)
 
-    exists = folder.is_dir()
+        exists = folder.is_dir()
+        if args.create:
+            (folder / "source").mkdir(parents=True, exist_ok=True)
+            if args.new:
+                write_atomic(folder / REF_FILE, args.ref)
     if args.create:
-        (folder / "source").mkdir(parents=True, exist_ok=True)
         submittal = free_path(folder, f"submittal-s{version}", ".json", reserve=True)
         document = free_path(folder, title, ".docx", reserve=True)
     return {
@@ -507,21 +585,41 @@ def record_spec(args, job_file, job):
     if args.version is None:
         raise FitmarkError("usage", "spec_saved needs --version")
     spec = job_file.parent / "spec" / f"v{args.version}" / "spec.json"
-    if not spec.is_file():
-        raise FitmarkError("missing_file", f"{spec} does not exist")
+    if not is_saved(spec):
+        raise FitmarkError("missing_file", f"{spec} has not been written")
     job["current_spec_version"] = max(job["current_spec_version"], args.version)
+
+
+def submittal_candidate(args, candidates):
+    """Work out whose folder a submittal is in, never guessing between people who share a name."""
+    base = slug(args.candidate, "candidate")
+    names = [path.name for path in same_name_folders(candidates, base)]
+    exact = args.candidate in names
+    stated = Path(args.file).parent.name
+    if stated:
+        if stated not in ([args.candidate] if exact else names):
+            raise FitmarkError("bad_file", f"{args.file} is not in a folder for {args.candidate}")
+        return stated
+    if exact:
+        return args.candidate
+    if len(names) > 1:
+        raise FitmarkError(
+            "ambiguous_candidate",
+            f"More than one person is called {args.candidate}: {', '.join(names)}",
+        )
+    return base
 
 
 def record_submittal(args, job_file, job):
     if not args.candidate or not args.file:
         raise FitmarkError("usage", "submittal_saved needs --candidate and --file")
-    candidate = slug(args.candidate, "candidate")
+    candidate = submittal_candidate(args, job_file.parent / "candidates")
     name = Path(args.file).name
     parsed = SUBMITTAL_FILE.fullmatch(name)
     if not parsed:
         raise FitmarkError("bad_file", f"{name} is not a submittal file name")
     saved = job_file.parent / "candidates" / candidate / name
-    if not saved.is_file() or saved.stat().st_size == 0:
+    if not is_saved(saved):
         raise FitmarkError("missing_file", f"{candidate}/{name} has not been written")
     if not any(s["candidate"] == candidate and s["file"] == name for s in job["submittals"]):
         job["submittals"].append(
@@ -550,6 +648,7 @@ RECORDERS = {
 def cmd_record(args):
     root = require_workspace(args)
     job_file, _ = find_job(root, args.job)
+    guard(full_path(job_file.parent), args)
     with job_lock(job_file):
         job = read_job(job_file)
         RECORDERS[args.event](args, job_file, job)
@@ -623,6 +722,7 @@ def build_parser():
         "--new", action="store_true", help="a different person who shares this name"
     )
     person.add_argument("--slug", help="which person, when several share this name")
+    candidate.add_argument("--ref", help="with --new: something stable that identifies this person")
 
     record = add("record", cmd_record)
     record.add_argument("--job", required=True, help="spec_id")
@@ -639,7 +739,7 @@ def build_parser():
 
 
 def read_setting_from_stdin():
-    value = sys.stdin.read().strip("\r\n")
+    value = sys.stdin.read().strip("\r\n") if sys.stdin else ""
     if "\n" in value:
         raise FitmarkError("bad_setting", "The Fitmark folder setting must be one line")
     return value
@@ -647,8 +747,10 @@ def read_setting_from_stdin():
 
 def main(argv=None):
     # Output is always UTF-8 JSON, whatever the locale.
-    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
-    sys.stdin.reconfigure(encoding="utf-8", errors="surrogateescape")
+    if sys.stdout:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if sys.stdin:
+        sys.stdin.reconfigure(encoding="utf-8", errors="surrogateescape")
     args = build_parser().parse_args(argv)
     try:
         if args.workspace_stdin:
@@ -662,6 +764,9 @@ def main(argv=None):
         return 1
     except UnicodeError as error:
         print(json.dumps({"error": str(error), "code": "bad_encoding"}, ensure_ascii=False))
+        return 1
+    except (RuntimeError, ValueError) as error:  # such as a symlink loop in a path
+        print(json.dumps({"error": str(error), "code": "bad_path"}, ensure_ascii=False))
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

@@ -209,6 +209,46 @@ def test_guard_refuses_an_agency_folder_linked_into_the_plugin(tmp_path):
     assert list(plugin.iterdir()) == []
 
 
+def test_guard_ignores_case_differences(tmp_path):
+    data = tmp_path / "PluginData"
+    data.mkdir()
+    out = fail("init", "--path", tmp_path / "plugindata" / "ws", "--plugin-data", data)
+    assert out["code"] == "inside_plugin"
+    assert not (data / "ws").exists()
+
+
+def test_guard_ignores_case_when_the_protected_folder_does_not_exist_yet(tmp_path):
+    out = fail(
+        "init", "--path", tmp_path / "plugindata" / "ws", "--plugin-data", tmp_path / "PluginData"
+    )
+    assert out["code"] == "inside_plugin"
+
+
+def test_record_refuses_a_job_folder_linked_into_the_plugin(ws, tmp_path):
+    plugin = tmp_path / "plugin"
+    (plugin / "job").mkdir(parents=True)
+    job_file = plugin / "job" / "job.yaml"
+    job_file.write_text(
+        json.dumps(
+            {
+                "spec_id": "a-b", "client": "a", "client_slug": "a", "job_slug": "b", "role": "b",
+                "status": "intake", "current_spec_version": 0, "submittals": [],
+            }
+        )
+    )  # fmt: skip
+    before = job_file.read_text()
+    (ws / "clients" / "a").mkdir()
+    (ws / "clients" / "a" / "b").symlink_to(plugin / "job")
+    code, out = run(
+        "record", "--job", "a-b", "--event", "status", "--status", "closed",
+        "--workspace", ws, "--plugin-root", plugin,
+    )  # fmt: skip
+    assert code == 1
+    assert out["code"] == "inside_plugin"
+    assert job_file.read_text() == before
+    assert sorted(p.name for p in (plugin / "job").iterdir()) == ["job.yaml"]
+
+
 # resolve
 
 
@@ -549,34 +589,79 @@ def test_reassessment_on_the_same_spec_never_overwrites(ws):
 def test_a_different_person_with_the_same_name_gets_a_suffix(ws):
     saved_spec(ws)
     saved_submittal(ws)
-    out = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
+    out = in_ws(
+        ws,
+        "candidate",
+        "--job",
+        ACME_ID,
+        "--name",
+        "Jane Doe",
+        "--new",
+        "--ref",
+        "cv-2",
+        "--create",
+    )
     assert out["slug"] == "jane-doe-2"
     assert Path(out["candidate_dir"]).is_dir()
 
 
-def test_retrying_new_reuses_the_unused_folder(ws):
+def test_retrying_new_with_the_same_ref_is_the_same_person(ws):
     saved_spec(ws)
     saved_submittal(ws)
-    args = ("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
-    assert in_ws(ws, *args)["slug"] == "jane-doe-2"
-    out = in_ws(ws, *args)
+    args = ("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--ref", "cv-2")
+    assert in_ws(ws, *args, "--create")["slug"] == "jane-doe-2"
+    out = in_ws(ws, *args, "--create")
     assert out["slug"] == "jane-doe-2"
     assert out["exists"] is True
 
 
-def test_new_moves_on_once_the_folder_is_in_use(ws):
+def test_new_with_another_ref_is_another_person(ws):
     saved_spec(ws)
     saved_submittal(ws)
     args = ("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
-    second = in_ws(ws, *args)
-    (Path(second["source_dir"]) / "cv.pdf").write_text("cv")
-    assert in_ws(ws, *args)["slug"] == "jane-doe-3"
+    assert in_ws(ws, *args, "--ref", "cv-2")["slug"] == "jane-doe-2"
+    assert in_ws(ws, *args, "--ref", "cv-3")["slug"] == "jane-doe-3"
+    assert in_ws(ws, *args, "--ref", "cv-2")["slug"] == "jane-doe-2"
+
+
+def test_new_needs_a_ref(ws):
+    saved_spec(ws)
+    code, out = run("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--workspace", ws)
+    assert code == 1
+    assert out["code"] == "usage"
+
+
+def test_parallel_new_keeps_different_people_apart(ws):
+    saved_spec(ws)
+    saved_submittal(ws, "Bob Ray")
+    running = [
+        start("candidate", "--job", ACME_ID, "--name", "Bob Ray", "--new", "--ref", f"cv-{n}",
+              "--create", "--workspace", ws)
+        for n in range(8)
+    ]  # fmt: skip
+    slugs = []
+    for process in running:
+        out, err = process.communicate()
+        assert process.returncode == 0, err
+        slugs.append(json.loads(out)["slug"])
+    assert len(set(slugs)) == 8
 
 
 def test_a_shared_name_must_say_which_person(ws):
     saved_spec(ws)
     saved_submittal(ws)
-    in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
+    in_ws(
+        ws,
+        "candidate",
+        "--job",
+        ACME_ID,
+        "--name",
+        "Jane Doe",
+        "--new",
+        "--ref",
+        "cv-2",
+        "--create",
+    )
     code, out = run("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--workspace", ws)
     assert code == 1
     assert out["code"] == "ambiguous_candidate"
@@ -586,7 +671,18 @@ def test_a_shared_name_must_say_which_person(ws):
 def test_slug_addresses_the_second_person_with_their_real_name(ws):
     saved_spec(ws)
     saved_submittal(ws)
-    in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
+    in_ws(
+        ws,
+        "candidate",
+        "--job",
+        ACME_ID,
+        "--name",
+        "Jane Doe",
+        "--new",
+        "--ref",
+        "cv-2",
+        "--create",
+    )
     out = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--slug", "jane-doe-2")
     assert out["slug"] == "jane-doe-2"
     assert out["exists"] is True
@@ -687,6 +783,76 @@ def test_recording_the_same_submittal_twice_adds_one_entry(ws):
         "submittal-s1.json",
     )
     assert len(out["job"]["submittals"]) == 1
+
+
+def two_janes(ws):
+    saved_spec(ws)
+    first = saved_submittal(ws)
+    second = in_ws(
+        ws,
+        "candidate",
+        "--job",
+        ACME_ID,
+        "--name",
+        "Jane Doe",
+        "--new",
+        "--ref",
+        "cv-2",
+        "--create",
+    )
+    Path(second["submittal_path"]).write_text("{}")
+    return first, second
+
+
+def record_submittal(ws, candidate, file):
+    return run(
+        "record", "--job", ACME_ID, "--event", "submittal_saved", "--candidate", candidate,
+        "--file", file, "--workspace", ws,
+    )  # fmt: skip
+
+
+def recorded_people(ws):
+    return [s["candidate"] for s in in_ws(ws, "status")["jobs"][0]["submittals"]]
+
+
+def test_record_credits_the_person_whose_folder_holds_the_file(ws):
+    _, second = two_janes(ws)
+    code, out = record_submittal(ws, "Jane Doe", second["submittal_path"])
+    assert code == 0, out
+    assert recorded_people(ws) == ["jane-doe", "jane-doe-2"]
+
+
+def test_record_refuses_a_shared_name_with_no_folder(ws):
+    two_janes(ws)
+    code, out = record_submittal(ws, "Jane Doe", "submittal-s1.json")
+    assert code == 1
+    assert out["code"] == "ambiguous_candidate"
+    assert recorded_people(ws) == ["jane-doe"]
+
+
+def test_record_refuses_a_file_in_another_persons_folder(ws):
+    _, second = two_janes(ws)
+    code, out = record_submittal(ws, "jane-doe", second["submittal_path"])
+    assert code == 1
+    assert out["code"] == "bad_file"
+
+
+def test_record_accepts_the_exact_folder_name(ws):
+    two_janes(ws)
+    code, out = record_submittal(ws, "jane-doe-2", "submittal-s1.json")
+    assert code == 0, out
+    assert recorded_people(ws) == ["jane-doe", "jane-doe-2"]
+
+
+def test_empty_spec_cannot_be_recorded_and_uses_no_version(ws):
+    job = in_ws(ws, "job", *ACME, "--create")
+    Path(job["outputs"]["spec_json"]).write_text("")
+    code, out = run(
+        "record", "--job", ACME_ID, "--event", "spec_saved", "--version", 1, "--workspace", ws
+    )
+    assert code == 1
+    assert out["code"] == "missing_file"
+    assert in_ws(ws, "job", *ACME)["next_spec_version"] == 1
 
 
 def test_record_changes_status(ws):
@@ -800,6 +966,60 @@ def test_a_missing_job_mentions_unreadable_files(ws):
     assert "job.yaml" in out["error"]
 
 
+def test_a_job_with_an_unusable_client_name_blocks_only_itself(ws):
+    saved_spec(ws)
+    other_job(ws, json.dumps(
+        {
+            "spec_id": "x", "client": "_", "client_slug": "x", "job_slug": "y", "role": "y",
+            "status": "intake", "current_spec_version": 0, "submittals": [],
+        }
+    ))  # fmt: skip
+    assert in_ws(ws, "job", *ACME)["exists"] is True
+    out = in_ws(ws, "status", "--client", "Acme Corp")
+    assert [j["spec_id"] for j in out["jobs"]] == [ACME_ID]
+    assert len(out["unreadable_jobs"]) == 1
+
+
+def test_an_unreadable_client_rule_file_is_skipped(ws):
+    saved_spec(ws)
+    (ws / "agency/clients/dir.yaml").mkdir()
+    (ws / "agency/clients/gone.yaml").symlink_to(ws / "missing")
+    assert in_ws(ws, "job", *ACME)["exists"] is True
+    assert in_ws(ws, "status", "--client", "Acme Corp")["jobs"]
+
+
+# Always JSON
+
+
+def test_a_version_folder_with_an_odd_digit_is_ignored(ws):
+    job = in_ws(ws, "job", *ACME, "--create")
+    odd = Path(job["job_dir"]) / "spec" / "v²"
+    odd.mkdir()
+    (odd / "spec.json").write_text("{}")
+    assert in_ws(ws, "job", *ACME)["next_spec_version"] == 1
+
+
+def test_a_symlink_loop_as_the_setting_still_gives_json(tmp_path):
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    code, out = run("resolve", "--workspace", loop, cwd=tmp_path, home=tmp_path)
+    assert code in (0, 1), out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell")
+@pytest.mark.parametrize("flag", ["", "--workspace-stdin"])
+def test_closed_stdin_still_gives_json(tmp_path, flag):
+    done = subprocess.run(
+        ["/bin/sh", "-c", f'"{sys.executable}" "{SCRIPT}" resolve {flag} <&-'],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout)["status"] == "no_workspace"
+
+
 # Passing the folder setting safely
 
 
@@ -851,6 +1071,14 @@ def test_a_setting_of_several_lines_is_refused(tmp_path):
 
 # Running at the same time
 
+HOLD_LOCK = """
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_CREAT | os.O_WRONLY)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("held", flush=True)
+time.sleep(60)
+"""
+
 
 def start(*args):
     return subprocess.Popen(
@@ -879,7 +1107,6 @@ def test_parallel_records_lose_nothing(ws):
         assert process.returncode == 0, err
     job = json.loads((job_dir / "job.yaml").read_text())
     assert sorted(s["candidate"] for s in job["submittals"]) == sorted(names)
-    assert not (job_dir / ".job.lock").exists()
 
 
 def test_parallel_candidates_get_different_paths(ws):
@@ -897,13 +1124,36 @@ def test_parallel_candidates_get_different_paths(ws):
     assert len({r["document_path"] for r in results}) == 12
 
 
-def test_a_stale_lock_does_not_block_recording(ws):
+def test_a_lock_left_by_a_killed_run_does_not_block_recording(ws):
     saved_spec(ws)
     lock = Path(in_ws(ws, "job", *ACME)["job_dir"]) / ".job.lock"
-    lock.write_text("")
-    os.utime(lock, (1, 1))
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLD_LOCK, str(lock)], stdout=subprocess.PIPE, text=True
+    )
+    assert holder.stdout.readline().strip() == "held"
+    holder.kill()
+    holder.communicate()
     out = in_ws(ws, "record", "--job", ACME_ID, "--event", "status", "--status", "confirmed")
     assert out["job"]["status"] == "confirmed"
+
+
+def test_a_lock_held_by_a_live_run_is_respected(ws):
+    saved_spec(ws)
+    lock = Path(in_ws(ws, "job", *ACME)["job_dir"]) / ".job.lock"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLD_LOCK, str(lock)], stdout=subprocess.PIPE, text=True
+    )
+    assert holder.stdout.readline().strip() == "held"
+    try:
+        code, out = run(
+            "record", "--job", ACME_ID, "--event", "status", "--status", "closed",
+            "--workspace", ws,
+        )  # fmt: skip
+    finally:
+        holder.kill()
+        holder.communicate()
+    assert code == 1
+    assert out["code"] == "job_locked"
 
 
 def test_a_reserved_empty_submittal_cannot_be_recorded(ws):
@@ -980,7 +1230,7 @@ def test_a_failed_write_leaves_no_temp_file(ws):
     code, out = run("job", "--client", "Acme", "--role", "Dev", "--create", "--workspace", ws)
     assert code == 1
     assert out["error"]
-    assert [p.name for p in job_dir.glob(".*")] == []
+    assert [p.name for p in job_dir.glob(".*") if p.name != ".job.lock"] == []
 
 
 def test_a_client_file_that_is_not_utf8_only_loses_its_own_rules(ws):
@@ -1004,6 +1254,29 @@ def test_an_unusable_match_entry_is_skipped(ws, text):
     (ws / "agency/clients/acme.yaml").write_text(text)
     assert in_ws(ws, "job", *ACME)["client_slug"] == "acme"
     assert in_ws(ws, "job", "--client", "Other", "--role", "Dev")["client_slug"] == "other"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "match: [Acme Corp] # legal name\n",
+        "match:   # names\n  - Acme Corp # legal\n\n  - ACo\n",
+        "match: [\n  Acme Corp, # legal\n  ACo\n]\nname: Acme\n",
+        "match: Acme Corp\n",
+        "name: x\nmatch:\n- Acme Corp\nother: y\n",
+    ],
+)
+def test_valid_yaml_match_lists_are_understood(ws, text):
+    (ws / "agency/clients/acme.yaml").write_text(text)
+    assert in_ws(ws, "job", *ACME)["client_slug"] == "acme"
+    assert in_ws(ws, "job", "--client", "Other", "--role", "Dev")["client_slug"] == "other"
+
+
+def test_hash_and_apostrophe_inside_names_are_kept(ws):
+    (ws / "agency/clients/x.yaml").write_text("match:\n  - C# Corp\n  - O'Brien # legal\n")
+    assert in_ws(ws, "job", "--client", "C# Corp", "--role", "Dev")["client_slug"] == "x"
+    assert in_ws(ws, "job", "--client", "OBrien", "--role", "Dev")["client_slug"] != "x"
+    assert in_ws(ws, "job", "--client", "O'Brien", "--role", "Dev")["client_slug"] == "x"
 
 
 # Script contract

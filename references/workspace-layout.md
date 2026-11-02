@@ -37,7 +37,7 @@ Fitmark/                                 # the workspace
 | Client folder | The stem of the `agency/clients/<slug>.yaml` whose file name or `match` list fits, otherwise the client name in kebab-case. A job keeps its folder and `spec_id` if a client rule is added later; only new jobs use the new folder. |
 | Job folder | The role title in kebab-case. `spec_id` is `<client>-<job>`. Symbols that tell names apart become words: `C++` is `c-plus-plus`, `C#` is `c-sharp`, `.NET` is `dot-net`, `R&D` is `r-and-d`. |
 | Spec version | One folder per version, numbered one above the highest with a saved `spec.json`. Old versions are never edited. |
-| Candidate folder | The name in kebab-case. A different person with the same name gets `-2`. Once a name is shared, pick the folder explicitly, because the name alone is refused. |
+| Candidate folder | The name in kebab-case. A different person with the same name gets `-2`. `--ref` says which person that is, so a retry finds the same folder. Once a name is shared, pick the folder explicitly, because the name alone is refused. |
 | Submittal | `submittal-s<n>.json`, where `n` is the spec version assessed against. A second assessment against the same version is `submittal-s<n>-2.json`. |
 | Job document | `<Client> – <Role> – Job spec v<n>.docx`. |
 | Candidate document | `<Initials> – <Role> – <Client> v<n>.docx`, and `-2` on a repeat. Follow the profile's anonymisation for what goes inside it. |

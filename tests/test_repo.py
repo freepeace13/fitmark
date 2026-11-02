@@ -75,14 +75,49 @@ def test_skill_gets_its_paths_from_the_workspace_script(name):
     assert "resolve" in text
 
 
-def test_folder_setting_is_never_quoted_for_the_shell():
-    # The value is substituted as text. A quote in it would end a quoted argument, so it reaches
-    # the script through a quoted heredoc. Double quotes also fail outright with no saved value.
-    files = [ROOT / "docs" / "SKILL_GUIDELINES.md", *(ROOT / "skills").glob("*/SKILL.md")]
-    for path in files:
-        text = path.read_text()
-        assert '"${user_config.' not in text, path
-        assert "'${user_config." not in text, path
+def setting_misuses(text):
+    """Lines using ${user_config.*} anywhere but as the body of the quoted heredoc."""
+    # The value is substituted as text, so on a command line a quote or `;` in it would break the
+    # command or run as code, quoted or not. Only the quoted heredoc passes it through untouched.
+    lines = text.splitlines()
+    misuses = []
+    for number, line in enumerate(lines):
+        if "${user_config." not in line:
+            continue
+        in_heredoc = (
+            line == "${user_config.workspace}"
+            and 0 < number < len(lines) - 1
+            and lines[number - 1].endswith("<<'FITMARK_WORKSPACE'")
+            and lines[number + 1] == "FITMARK_WORKSPACE"
+        )
+        if not in_heredoc:
+            misuses.append(line)
+    return misuses
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "workspace.py resolve --workspace ${user_config.workspace}",
+        "workspace.py resolve --workspace '${user_config.workspace}'",
+        'workspace.py resolve --workspace "${user_config.workspace}"',
+    ],
+)
+def test_the_check_catches_every_command_line_form(line):
+    assert setting_misuses(line) == [line]
+
+
+def test_the_check_allows_the_heredoc():
+    good = "x --workspace-stdin <<'FITMARK_WORKSPACE'\n${user_config.workspace}\nFITMARK_WORKSPACE"
+    assert setting_misuses(good) == []
+
+
+def test_folder_setting_only_reaches_the_shell_through_the_heredoc():
+    for path in (ROOT / "skills").glob("*/SKILL.md"):
+        assert setting_misuses(path.read_text()) == [], path
+    # The guidelines may also name the placeholder in prose, as inline code.
+    text = (ROOT / "docs" / "SKILL_GUIDELINES.md").read_text()
+    assert setting_misuses(text.replace("`${user_config.workspace}`", "")) == []
 
 
 def test_guidelines_pass_the_folder_setting_through_stdin():
