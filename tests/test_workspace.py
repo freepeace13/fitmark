@@ -158,6 +158,57 @@ def test_suggested_path_is_never_inside_the_plugin(tmp_path):
     assert out["code"] == "inside_plugin"
 
 
+def test_guard_refuses_a_client_folder_linked_into_the_plugin(ws, tmp_path):
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (ws / "clients" / "evil").symlink_to(plugin)
+    code, out = run(
+        "job", "--client", "evil", "--role", "r", "--create",
+        "--workspace", ws, "--plugin-root", plugin,
+    )  # fmt: skip
+    assert code == 1
+    assert out["code"] == "inside_plugin"
+    assert list(plugin.iterdir()) == []
+
+
+@pytest.mark.parametrize("sub", ["intake", "spec", "candidates"])
+def test_guard_refuses_a_job_subfolder_linked_into_the_plugin(ws, tmp_path, sub):
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    job_dir = Path(in_ws(ws, "job", *ACME, "--create")["job_dir"])
+    (job_dir / sub).rmdir()
+    (job_dir / sub).symlink_to(plugin)
+    code, out = run("job", *ACME, "--workspace", ws, "--plugin-root", plugin)
+    assert code == 1
+    assert out["code"] == "inside_plugin"
+
+
+def test_guard_refuses_a_candidate_folder_linked_into_the_plugin(ws, tmp_path):
+    saved_spec(ws)
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    job_dir = Path(in_ws(ws, "job", *ACME)["job_dir"])
+    (job_dir / "candidates" / "jane-doe").symlink_to(plugin)
+    code, out = run(
+        "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create",
+        "--workspace", ws, "--plugin-root", plugin,
+    )  # fmt: skip
+    assert code == 1
+    assert out["code"] == "inside_plugin"
+    assert list(plugin.iterdir()) == []
+
+
+def test_guard_refuses_an_agency_folder_linked_into_the_plugin(tmp_path):
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    root = tmp_path / "w"
+    root.mkdir()
+    (root / "agency").symlink_to(plugin)
+    out = fail("init", "--path", root, "--plugin-root", plugin)
+    assert out["code"] == "inside_plugin"
+    assert list(plugin.iterdir()) == []
+
+
 # resolve
 
 
@@ -216,7 +267,122 @@ def test_commands_needing_a_workspace_fail_without_one(tmp_path):
     assert out["code"] == "no_workspace"
 
 
+# Remembering the folder chosen at first use
+
+
+def test_a_workspace_in_the_default_folder_is_found_with_a_blank_setting(tmp_path):
+    root = tmp_path / "Fitmark"
+    ok("init", "--path", root)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    out = ok("resolve", "--workspace", "", cwd=elsewhere, home=tmp_path)
+    assert out["status"] == "ok"
+    assert out["root"] == str(root.resolve())
+    assert out["found_by"] == "default"
+
+
+def test_a_custom_folder_is_remembered_in_plugin_data(tmp_path):
+    custom = tmp_path / "Custom"
+    data = tmp_path / "data"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert ok("init", "--path", custom, "--plugin-data", data, home=tmp_path)["remembered"] is True
+    out = ok("resolve", "--plugin-data", data, cwd=elsewhere, home=tmp_path)
+    assert out["root"] == str(custom.resolve())
+    assert out["found_by"] == "saved"
+
+
+def test_a_custom_folder_beats_an_unused_default_setting(tmp_path):
+    custom = tmp_path / "Custom"
+    data = tmp_path / "data"
+    setting = ("--workspace", "~/Fitmark", "--plugin-data", data)
+    ok("init", "--path", custom, *setting, home=tmp_path)
+    out = ok("resolve", *setting, cwd=tmp_path, home=tmp_path)
+    assert out["root"] == str(custom.resolve())
+
+
+def test_changing_the_setting_replaces_the_remembered_folder(tmp_path):
+    data = tmp_path / "data"
+    ok("init", "--path", tmp_path / "Custom", "--plugin-data", data, home=tmp_path)
+    wanted = tmp_path / "Wanted"
+    out = ok("resolve", "--workspace", wanted, "--plugin-data", data, cwd=tmp_path, home=tmp_path)
+    assert out["status"] == "no_workspace"
+    assert out["suggested_path"] == str(wanted.resolve())
+
+
+def test_a_remembered_folder_that_is_gone_or_unreadable_is_ignored(tmp_path):
+    data = tmp_path / "data"
+    custom = tmp_path / "Custom"
+    ok("init", "--path", custom, "--plugin-data", data, home=tmp_path)
+    (custom / "fitmark.yaml").unlink()
+    out = ok("resolve", "--plugin-data", data, cwd=tmp_path, home=tmp_path)
+    assert out["status"] == "no_workspace"
+    (data / "workspace.json").write_text("not json")
+    out = ok("resolve", "--plugin-data", data, cwd=tmp_path, home=tmp_path)
+    assert out["status"] == "no_workspace"
+
+
 # job
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("C++ Developer", "C# Developer"),
+        ("C++ Developer", "C Developer"),
+        (".NET Developer", "NET Developer"),
+        ("R&D Lead", "RD Lead"),
+    ],
+)
+def test_roles_that_differ_only_by_a_symbol_stay_separate(ws, first, second):
+    one = in_ws(ws, "job", "--client", "Acme", "--role", first, "--create")
+    two = in_ws(ws, "job", "--client", "Acme", "--role", second, "--create")
+    assert two["exists"] is False
+    assert one["spec_id"] != two["spec_id"]
+    assert one["job_dir"] != two["job_dir"]
+
+
+def test_clients_that_differ_only_by_a_symbol_stay_separate(ws):
+    one = in_ws(ws, "job", "--client", "C++ Corp", "--role", "Dev")
+    two = in_ws(ws, "job", "--client", "C# Corp", "--role", "Dev")
+    assert one["client_slug"] != two["client_slug"]
+
+
+@pytest.mark.parametrize("spelling", ["senior developer", "Senior-Developer", "Senior  Developer."])
+def test_spelling_variants_of_a_role_are_the_same_job(ws, spelling):
+    one = in_ws(ws, "job", "--client", "Acme", "--role", "Senior Developer", "--create")
+    two = in_ws(ws, "job", "--client", "Acme", "--role", spelling)
+    assert two["exists"] is True
+    assert two["spec_id"] == one["spec_id"]
+
+
+def test_a_new_client_rule_keeps_an_existing_job_in_its_folder(ws):
+    saved_spec(ws)
+    before = in_ws(ws, "job", *ACME)
+    (ws / "agency/clients/acme.yaml").write_text("match: [Acme Corp, ACME Inc]\n")
+    for client in ("Acme Corp", "ACME Inc", "acme"):
+        out = in_ws(ws, "job", "--client", client, "--role", ACME[3])
+        assert out["exists"] is True
+        assert out["spec_id"] == ACME_ID
+        assert out["job_dir"] == before["job_dir"]
+        assert out["client_slug"] == "acme-corp"
+        assert out["next_spec_version"] == 2
+
+
+def test_a_new_client_rule_sends_new_jobs_to_the_new_folder(ws):
+    saved_spec(ws)
+    (ws / "agency/clients/acme.yaml").write_text("match: [Acme Corp]\n")
+    out = in_ws(ws, "job", "--client", "Acme Corp", "--role", "Analyst")
+    assert out["exists"] is False
+    assert out["client_slug"] == "acme"
+
+
+def test_status_still_lists_a_job_after_a_new_client_rule(ws):
+    saved_spec(ws)
+    (ws / "agency/clients/acme.yaml").write_text("match: [Acme Corp]\n")
+    for client in ("Acme Corp", "acme"):
+        jobs = in_ws(ws, "status", "--client", client)["jobs"]
+        assert [j["spec_id"] for j in jobs] == [ACME_ID]
 
 
 @pytest.mark.parametrize(
@@ -224,7 +390,7 @@ def test_commands_needing_a_workspace_fail_without_one(tmp_path):
     [
         ("Acme Corp", "Senior Laravel Developer", ACME_ID),
         ("Northwind Traders", "Finance Manager", "northwind-traders-finance-manager"),
-        ("Café Noël", "C++ / Rust Dev", "cafe-noel-c-rust-dev"),
+        ("Café Noël", "C++ / Rust Dev", "cafe-noel-c-plus-plus-rust-dev"),
     ],
 )
 def test_job_slugs_and_spec_id(ws, client, role, spec_id):
@@ -369,6 +535,66 @@ def test_a_different_person_with_the_same_name_gets_a_suffix(ws):
     out = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
     assert out["slug"] == "jane-doe-2"
     assert Path(out["candidate_dir"]).is_dir()
+
+
+def test_retrying_new_reuses_the_unused_folder(ws):
+    saved_spec(ws)
+    saved_submittal(ws)
+    args = ("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
+    assert in_ws(ws, *args)["slug"] == "jane-doe-2"
+    out = in_ws(ws, *args)
+    assert out["slug"] == "jane-doe-2"
+    assert out["exists"] is True
+
+
+def test_new_moves_on_once_the_folder_is_in_use(ws):
+    saved_spec(ws)
+    saved_submittal(ws)
+    args = ("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
+    second = in_ws(ws, *args)
+    (Path(second["source_dir"]) / "cv.pdf").write_text("cv")
+    assert in_ws(ws, *args)["slug"] == "jane-doe-3"
+
+
+def test_a_shared_name_must_say_which_person(ws):
+    saved_spec(ws)
+    saved_submittal(ws)
+    in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
+    code, out = run("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--workspace", ws)
+    assert code == 1
+    assert out["code"] == "ambiguous_candidate"
+    assert "jane-doe, jane-doe-2" in out["error"]
+
+
+def test_slug_addresses_the_second_person_with_their_real_name(ws):
+    saved_spec(ws)
+    saved_submittal(ws)
+    in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--create")
+    out = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--slug", "jane-doe-2")
+    assert out["slug"] == "jane-doe-2"
+    assert out["exists"] is True
+    assert Path(out["document_path"]).name.startswith("J.D. – ")
+
+
+@pytest.mark.parametrize("value", ["jane-doe-9", "john-smith", "../jane-doe"])
+def test_slug_must_be_an_existing_folder_for_that_name(ws, value):
+    saved_spec(ws)
+    saved_submittal(ws)
+    code, out = run(
+        "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--slug", value, "--workspace", ws
+    )
+    assert code == 1
+    assert out["code"] == "unknown_candidate"
+
+
+def test_new_and_slug_cannot_be_combined(ws):
+    saved_spec(ws)
+    code, out = run(
+        "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--slug", "jane-doe",
+        "--workspace", ws,
+    )  # fmt: skip
+    assert code == 2
+    assert out["code"] == "usage"
 
 
 # record

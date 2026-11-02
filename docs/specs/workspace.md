@@ -5,8 +5,10 @@ Acceptance criteria for the workspace layer. Status boxes reflect what has been 
 ## scripts/workspace.py
 
 - [x] `init`, `resolve`, `job`, `candidate`, `record` and `status` return JSON, using the standard library only.
-- [x] Refuses any path inside the plugin root or plugin data folder, including through symlinks and a marker found inside the plugin.
-- [x] Finds the workspace from the folder setting, then from a `fitmark.yaml` in the current folder or above, and otherwise returns `no_workspace` with a suggested path.
+- [x] Refuses any path inside the plugin root or plugin data folder, including through a symlink at the root, at any job, candidate or output path, and a marker found inside the plugin.
+- [x] Finds the workspace from the folder setting, then a `fitmark.yaml` in the current folder or above, then the folder remembered from `init` in the plugin data folder, and with no setting the default folder. Otherwise returns `no_workspace` with a suggested path.
+- [x] Names that differ by a meaningful symbol (`C++`, `C#`, `.NET`) get separate folders, and adding a client rule leaves existing jobs in place and findable.
+- [x] A person's case file can't silently receive another person's work: a shared name must be addressed with `--slug`, and retrying `--new` doesn't create another person.
 - [x] Spec versions and submittals never overwrite an earlier file.
 - [x] `job.yaml` and `fitmark.yaml` match their schemas and parse as YAML.
 

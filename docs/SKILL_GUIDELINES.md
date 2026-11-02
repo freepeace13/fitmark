@@ -24,7 +24,7 @@ Then run `workspace.py record`. In your reply, show paths relative to the worksp
 
 Keep `${user_config.workspace}` in single quotes. With no saved value it stays as literal text, which the script treats as unset, but inside double quotes the shell stops with "bad substitution".
 
-Pass the same `--workspace`, `--plugin-root` and `--plugin-data` values to every `workspace.py` command. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
+Pass the same `--workspace`, `--plugin-root` and `--plugin-data` values to every `workspace.py` command. For a candidate, `exists: true` means a folder with that name exists, not that it's the same person. Check with the recruiter, then use `--new` for someone else. If the script returns `ambiguous_candidate`, ask which person and pass their folder with `--slug`, keeping their real name in `--name`. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
 
 ## Data
 

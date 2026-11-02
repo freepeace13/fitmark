@@ -17,6 +17,7 @@ import unicodedata
 from pathlib import Path
 
 MARKER = "fitmark.yaml"
+REMEMBERED = "workspace.json"  # in the plugin data folder: which folder was chosen at first use
 DEFAULT_WORKSPACE = "~/Fitmark"
 SCRIPT_PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATUSES = ("intake", "spec_sent", "confirmed", "on_hold", "filled", "closed")
@@ -39,6 +40,11 @@ class JsonParser(argparse.ArgumentParser):
 def slug(text, what="name"):
     plain = unicodedata.normalize("NFKD", text)
     plain = "".join(c for c in plain if not unicodedata.combining(c)).casefold()
+    # Symbols that tell names apart become words: C++, C# and C must not share a folder.
+    plain = re.sub(r"(?<=[\w+])\+", "-plus-", plain)
+    plain = re.sub(r"(?<=\w)#", "-sharp-", plain)
+    plain = re.sub(r"(?<![\w.])\.(?=\w)", "dot-", plain)
+    plain = re.sub(r"(?<=\w)\s*&\s*(?=\w)", "-and-", plain)
     result = re.sub(r"[\W_]+", "-", plain).strip("-")
     if not result:
         raise FitmarkError("bad_name", f"{what} {text!r} has no letters or digits")
@@ -70,6 +76,39 @@ def guard(path, args):
     return path
 
 
+def setting_text(args):
+    return str(full_path(args.workspace)) if is_set(args.workspace) else ""
+
+
+def remember_workspace(root, args):
+    """Save the folder chosen at first use so later sessions find it. Returns whether it saved."""
+    if not is_set(args.plugin_data):
+        return False
+    folder = full_path(args.plugin_data)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        write_atomic(
+            folder / REMEMBERED, json.dumps({"root": str(root), "setting": setting_text(args)})
+        )
+    except OSError:
+        return False
+    return True
+
+
+def remembered_workspace(args):
+    """Return the remembered folder, unless it is gone or the folder setting has since changed."""
+    if not is_set(args.plugin_data):
+        return None
+    try:
+        saved = json.loads((full_path(args.plugin_data) / REMEMBERED).read_text())
+        root, setting = full_path(saved["root"]), saved["setting"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if setting != setting_text(args) or not (root / MARKER).is_file():
+        return None
+    return guard(root, args)
+
+
 def find_workspace(args):
     """Return (root, found_by, suggested_path). Root is None when there is no workspace."""
     setting = guard(full_path(args.workspace), args) if is_set(args.workspace) else None
@@ -79,7 +118,15 @@ def find_workspace(args):
     for folder in (start, *start.parents):
         if (folder / MARKER).is_file():
             return guard(folder, args), "marker", None
-    return None, None, setting or guard(full_path(DEFAULT_WORKSPACE), args)
+    remembered = remembered_workspace(args)
+    if remembered:
+        return remembered, "saved", None
+    if setting:
+        return None, None, setting
+    default = guard(full_path(DEFAULT_WORKSPACE), args)
+    if (default / MARKER).is_file():
+        return default, "default", None
+    return None, None, default
 
 
 def require_workspace(args):
@@ -139,6 +186,19 @@ def client_slug(root, name):
     return wanted
 
 
+def matching_job(root, client, role, client_name):
+    """Find a job by what the client's rules say now, so a later rule doesn't orphan it."""
+    jobs = [
+        (path, job)
+        for path, job in all_jobs(root)
+        if job["job_slug"] == role and client_slug(root, job["client"]) == client
+    ]
+    # If a rule has joined two folders, the job created under this exact name comes first.
+    wanted = slug(client_name, "client")
+    jobs.sort(key=lambda item: slug(item[1]["client"], "client") != wanted)
+    return jobs[0] if jobs else (None, None)
+
+
 def saved_versions(job_dir):
     versions = []
     for path in (job_dir / "spec").glob("v*/spec.json"):
@@ -162,18 +222,21 @@ def cmd_init(args):
     root = guard(full_path(args.path), args)
     if root.exists() and not root.is_dir():
         raise FitmarkError("not_a_folder", f"{root} is a file")
-    for folder in ("agency/brand", "agency/criteria", "agency/clients", "clients"):
-        (root / folder).mkdir(parents=True, exist_ok=True)
+    folders = [root / f for f in ("agency/brand", "agency/criteria", "agency/clients", "clients")]
+    for folder in folders:
+        guard(full_path(folder), args)
+    for folder in folders:
+        folder.mkdir(parents=True, exist_ok=True)
     marker = root / MARKER
     if marker.exists():
-        return {"status": "exists", "root": str(root)}
+        return {"status": "exists", "root": str(root), "remembered": remember_workspace(root, args)}
     created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     write_atomic(
         marker,
         f"schema_version: 1\nagency: {json.dumps(args.agency, ensure_ascii=False)}\n"
         f'created_at: "{created}"\n',
     )
-    return {"status": "created", "root": str(root)}
+    return {"status": "created", "root": str(root), "remembered": remember_workspace(root, args)}
 
 
 def cmd_resolve(args):
@@ -193,19 +256,29 @@ def cmd_job(args):
     root = require_workspace(args)
     client = client_slug(root, args.client)
     role = slug(args.role, "role")
-    spec_id = f"{client}-{role}"
-    job_dir = root / "clients" / client / role
+    found, found_job = matching_job(root, client, role, args.client)
+    if found:
+        client, spec_id, job_dir = found_job["client_slug"], found_job["spec_id"], found.parent
+    else:
+        spec_id = f"{client}-{role}"
+        job_dir = root / "clients" / client / role
     job_file = job_dir / "job.yaml"
 
     for path, job in all_jobs(root):
         if job["spec_id"] == spec_id and path != job_file:
             raise FitmarkError("spec_id_clash", f"{spec_id} is already used by {path.parent}")
 
+    version = max(saved_versions(guard(full_path(job_dir), args)), default=0) + 1
+    spec_dir = job_dir / "spec" / f"v{version}"
+    subfolders = [job_dir / "intake", job_dir / "spec", job_dir / "candidates"]
+    for folder in (*subfolders, spec_dir):
+        guard(full_path(folder), args)
+
     exists = job_file.is_file()
     job = read_job(job_file) if exists else None
     if args.create:
-        for folder in ("intake", "spec", "candidates"):
-            (job_dir / folder).mkdir(parents=True, exist_ok=True)
+        for folder in subfolders:
+            folder.mkdir(parents=True, exist_ok=True)
         if not exists:
             job = {
                 "spec_id": spec_id,
@@ -219,10 +292,8 @@ def cmd_job(args):
             }
             write_job(job_file, job)
 
-    version = max(saved_versions(job_dir), default=0) + 1
     client_name = readable(job["client"] if job else args.client)
     role_name = readable(job["role"] if job else args.role)
-    spec_dir = job_dir / "spec" / f"v{version}"
     outputs = {
         "spec_json": str(spec_dir / "spec.json"),
         "spec_document": str(spec_dir / f"{client_name} – {role_name} – Job spec v{version}.docx"),
@@ -232,6 +303,8 @@ def cmd_job(args):
     }
     if version > 1:
         outputs["changes_from_previous"] = str(spec_dir / f"changes-from-v{version - 1}.md")
+    for path in outputs.values():
+        guard(full_path(path), args)
     return {
         "exists": exists,
         "client_slug": client,
@@ -248,6 +321,44 @@ def initials(name):
     return "".join(f"{word[0].upper()}." for word in name.split())
 
 
+def same_name_folders(candidates, base):
+    """Return the folders for everyone sharing this name: base, base-2, base-3, in order."""
+    pattern = re.compile(re.escape(base) + r"(?:-(\d+))?")
+    found = []
+    for path in candidates.glob("*"):
+        parsed = pattern.fullmatch(path.name)
+        if parsed and path.is_dir():
+            found.append((int(parsed[1] or 1), path))
+    return [path for _, path in sorted(found)]
+
+
+def has_content(folder):
+    return any(path.is_file() and path.stat().st_size for path in folder.rglob("*"))
+
+
+def choose_candidate_folder(args, candidates, base):
+    folders = same_name_folders(candidates, base)
+    names = [path.name for path in folders]
+    if args.slug:
+        if args.slug not in names:
+            raise FitmarkError(
+                "unknown_candidate", f"{args.slug} is not a folder for {args.name}: {names}"
+            )
+        return candidates / args.slug
+    if args.new:
+        # A retry must not make a third person: an unused -N folder is still free.
+        if len(folders) > 1 and not has_content(folders[-1]):
+            return folders[-1]
+        return free_path(candidates, base, "")
+    if len(folders) > 1:
+        raise FitmarkError(
+            "ambiguous_candidate",
+            f"More than one person is called {args.name}: {', '.join(names)}. "
+            "Say which with --slug, or use --new for someone else.",
+        )
+    return candidates / base
+
+
 def cmd_candidate(args):
     root = require_workspace(args)
     job_file, job = find_job(root, args.job)
@@ -257,14 +368,17 @@ def cmd_candidate(args):
 
     base = slug(args.name, "candidate")
     candidates = job_file.parent / "candidates"
-    folder = candidates / base
-    if args.new:
-        folder = free_path(candidates, base, "")
+    guard(full_path(candidates), args)
+    folder = choose_candidate_folder(args, candidates, base)
+    title = readable(f"{initials(args.name)} – {job['role']} – {job['client']} v{version}")
+    submittal = free_path(folder, f"submittal-s{version}", ".json")
+    document = free_path(folder, title, ".docx")
+    for path in (folder, folder / "source", submittal, document):
+        guard(full_path(path), args)
+
     exists = folder.is_dir()
     if args.create:
         (folder / "source").mkdir(parents=True, exist_ok=True)
-
-    title = readable(f"{initials(args.name)} – {job['role']} – {job['client']} v{version}")
     return {
         "exists": exists,
         "slug": folder.name,
@@ -272,8 +386,8 @@ def cmd_candidate(args):
         "source_dir": str(folder / "source"),
         "spec_version": version,
         "spec_json": str(job_file.parent / "spec" / f"v{version}" / "spec.json"),
-        "submittal_path": str(free_path(folder, f"submittal-s{version}", ".json")),
-        "document_path": str(free_path(folder, title, ".docx")),
+        "submittal_path": str(submittal),
+        "document_path": str(document),
     }
 
 
@@ -346,7 +460,7 @@ def cmd_status(args):
     wanted = client_slug(root, args.client) if args.client else None
     jobs = []
     for _, job in all_jobs(root):
-        if wanted and job["client_slug"] != wanted:
+        if wanted and client_slug(root, job["client"]) != wanted:
             continue
         if args.open and job["status"] in CLOSED_STATUSES:
             continue
@@ -383,9 +497,11 @@ def build_parser():
     candidate.add_argument("--job", required=True, help="spec_id")
     candidate.add_argument("--name", required=True)
     candidate.add_argument("--create", action="store_true")
-    candidate.add_argument(
+    person = candidate.add_mutually_exclusive_group()
+    person.add_argument(
         "--new", action="store_true", help="a different person who shares this name"
     )
+    person.add_argument("--slug", help="which person, when several share this name")
 
     record = add("record", cmd_record)
     record.add_argument("--job", required=True, help="spec_id")
