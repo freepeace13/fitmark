@@ -1,0 +1,47 @@
+# Workspace layout
+
+`scripts/workspace.py` works out these paths. Follow this page by hand only if Python can't run, list "workspace check" under skipped checks, and never write inside the plugin folder.
+
+```
+Fitmark/                                 # the workspace
+├── fitmark.yaml                         # marker: schema_version, agency, created_at
+├── agency/                              # rules only, safe to share or commit
+│   ├── profile.yaml
+│   ├── guidelines.md
+│   ├── brand/                           # brand.yaml, logo, templates/*.docx
+│   ├── criteria/                        # engineering.yaml, finance.yaml
+│   └── clients/                         # acme.yaml (client rules, with a match list)
+└── clients/                             # case files with candidate data, private
+    └── acme/
+        └── senior-laravel-developer/    # spec_id: acme-senior-laravel-developer
+            ├── job.yaml                 # index, written only by scripts
+            ├── intake/                  # dated copies of intake notes
+            ├── spec/
+            │   ├── v1/
+            │   │   ├── spec.json
+            │   │   ├── Acme – Senior Laravel Developer – Job spec v1.docx
+            │   │   └── confirmation-email.txt
+            │   └── v2/                  # same files, plus changes-from-v1.md
+            └── candidates/
+                └── jane-doe/
+                    ├── source/          # cv.pdf, screening-notes.md
+                    ├── submittal-s1.json
+                    ├── submittal-s2.json
+                    └── J.D. – Senior Laravel Developer – Acme v2.docx
+```
+
+## Naming
+
+| Item | Rule |
+| --- | --- |
+| Client folder | The stem of the `agency/clients/<slug>.yaml` whose file name or `match` list fits, otherwise the client name in kebab-case. |
+| Job folder | The role title in kebab-case. `spec_id` is `<client>-<job>`. |
+| Spec version | One folder per version, numbered one above the highest with a saved `spec.json`. Old versions are never edited. |
+| Candidate folder | The name in kebab-case. A different person with the same name gets `-2`. |
+| Submittal | `submittal-s<n>.json`, where `n` is the spec version assessed against. A second assessment against the same version is `submittal-s<n>-2.json`. |
+| Job document | `<Client> – <Role> – Job spec v<n>.docx`. |
+| Candidate document | `<Initials> – <Role> – <Client> v<n>.docx`, and `-2` on a repeat. Follow the profile's anonymisation for what goes inside it. |
+
+## job.yaml
+
+Scripts write this file; recruiters don't. It holds JSON, which is also valid YAML, and matches `schemas/job.schema.json`. Status is one of `intake`, `spec_sent`, `confirmed`, `on_hold`, `filled` or `closed`.

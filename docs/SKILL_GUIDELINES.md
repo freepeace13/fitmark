@@ -2,14 +2,29 @@
 
 ## Naming
 
-- Skill folders are kebab-case and name the job (`intake-to-job-spec`, not `helper`). They sit flat under `skills/`.
-- Commands are short verbs (`intake`, `submittal`, `setup`), invoked as `/fitmark:<command>`.
+- Skill folders are short verbs for the recruiter's current step (`intake`, `submittal`, `spec-diff`, `setup`, `status`). They sit flat under `skills/`, and each one gives a single `/fitmark:<name>` shortcut.
+- There is no `commands/` folder and no `bin/` folder. Claude's web app and Cowork will not install a plugin with `bin/`.
 - Skill descriptions must be specific enough that two skills never trigger on the same request.
 
-## Every skill starts the same way
+## Every skill starts and ends the same way
 
-1. Read `references/evidence-rules.md` and `references/fairness-rules.md`.
-2. Load the effective agency profile. With no profile, use defaults and mention once that `/fitmark:setup` can tailor outputs.
+Skills never choose a folder. `scripts/workspace.py` returns every path, and it refuses any path inside the plugin. Use these two blocks in every `SKILL.md`, adding only the skill's own `job` or `candidate` arguments.
+
+```markdown
+## Start
+1. Read `${CLAUDE_PLUGIN_ROOT}/references/evidence-rules.md` and `${CLAUDE_PLUGIN_ROOT}/references/fairness-rules.md`.
+2. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/workspace.py" resolve --workspace '${user_config.workspace}' --plugin-root "${CLAUDE_PLUGIN_ROOT}" --plugin-data "${CLAUDE_PLUGIN_DATA}"`.
+   If it returns `no_workspace`, follow `${CLAUDE_PLUGIN_ROOT}/references/quick-start.md`, then continue.
+3. Read the agency's rules from the `agency_dir` it returns. With no profile, use defaults.
+
+## Outputs
+Run `workspace.py job ... --create` and write each file to the path it returns. Never build a path yourself.
+Then run `workspace.py record`. In your reply, show paths relative to the workspace.
+```
+
+Keep `${user_config.workspace}` in single quotes. With no saved value it stays as literal text, which the script treats as unset, but inside double quotes the shell stops with "bad substitution".
+
+Pass the same `--workspace`, `--plugin-root` and `--plugin-data` values to every `workspace.py` command. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
 
 ## Data
 

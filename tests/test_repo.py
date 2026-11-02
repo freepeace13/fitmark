@@ -5,6 +5,7 @@ import re
 import warnings
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,10 +54,37 @@ def test_skill_has_name_and_description(name):
     assert {"name", "description"} <= frontmatter_keys(path.read_text())
 
 
-def test_commands_point_to_existing_skills():
-    for command in (ROOT / "commands").glob("*.md"):
-        text = command.read_text()
-        assert any(name in text for name in skill_names()), f"{command.name} names no skill"
+def test_no_commands_folder():
+    assert not (ROOT / "commands").exists(), "Skills provide the /fitmark: shortcuts"
+
+
+def test_no_bin_folder():
+    assert not (ROOT / "bin").exists(), "claude.ai and Cowork won't install a plugin with bin/"
+
+
+def test_workspace_setting_is_declared():
+    option = manifest("plugin.json")["userConfig"]["workspace"]
+    assert option["type"] == "directory"
+    assert option["default"] == "~/Fitmark"
+
+
+@pytest.mark.parametrize("name", sorted(skill_names()))
+def test_skill_gets_its_paths_from_the_workspace_script(name):
+    text = (ROOT / "skills" / name / "SKILL.md").read_text()
+    assert "workspace.py" in text
+    assert "resolve" in text
+
+
+def test_folder_setting_is_never_double_quoted_for_the_shell():
+    # With no saved value the text stays literal, and "${user_config.x}" is a shell error.
+    files = [ROOT / "docs" / "SKILL_GUIDELINES.md", *(ROOT / "skills").glob("*/SKILL.md")]
+    for path in files:
+        assert '"${user_config.' not in path.read_text(), path
+
+
+@pytest.mark.parametrize("path", sorted((ROOT / "schemas").glob("*.json")), ids=lambda p: p.name)
+def test_schemas_are_valid(path):
+    jsonschema.Draft202012Validator.check_schema(json.loads(path.read_text()))
 
 
 def test_fixtures_contain_no_real_contact_details():

@@ -1,0 +1,419 @@
+#!/usr/bin/env python3
+"""Find the Fitmark workspace and work out every path a skill reads or writes.
+
+Standard library only. Prints JSON. Exit 0 on success, 1 with a JSON error, 2 on bad usage.
+The workspace is never allowed inside the plugin root or plugin data folder.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import sys
+import tempfile
+import time
+import unicodedata
+from pathlib import Path
+
+MARKER = "fitmark.yaml"
+DEFAULT_WORKSPACE = "~/Fitmark"
+SCRIPT_PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+STATUSES = ("intake", "spec_sent", "confirmed", "on_hold", "filled", "closed")
+CLOSED_STATUSES = ("filled", "closed")
+SUBMITTAL_FILE = re.compile(r"submittal-s(\d+)(?:-\d+)?\.json")
+
+
+class FitmarkError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+class JsonParser(argparse.ArgumentParser):
+    def error(self, message):
+        print(json.dumps({"error": message, "code": "usage"}))
+        sys.exit(2)
+
+
+def slug(text, what="name"):
+    plain = unicodedata.normalize("NFKD", text)
+    plain = "".join(c for c in plain if not unicodedata.combining(c)).casefold()
+    result = re.sub(r"[\W_]+", "-", plain).strip("-")
+    if not result:
+        raise FitmarkError("bad_name", f"{what} {text!r} has no letters or digits")
+    return result
+
+
+def readable(text):
+    """Make text safe to use inside one file name, keeping it readable."""
+    return re.sub(r"[/\\:\x00-\x1f]+", "-", text).strip()
+
+
+def is_set(value):
+    return bool(value) and not value.startswith("${")
+
+
+def full_path(value):
+    return Path(os.path.expanduser(value)).resolve()
+
+
+def guard(path, args):
+    """Refuse any path inside the plugin root or plugin data folder."""
+    protected = [SCRIPT_PLUGIN_ROOT]
+    protected += [full_path(v) for v in (args.plugin_root, args.plugin_data) if is_set(v)]
+    for folder in protected:
+        if path == folder or folder in path.parents:
+            raise FitmarkError(
+                "inside_plugin", f"{path} is inside the plugin folder {folder}; choose another"
+            )
+    return path
+
+
+def find_workspace(args):
+    """Return (root, found_by, suggested_path). Root is None when there is no workspace."""
+    setting = guard(full_path(args.workspace), args) if is_set(args.workspace) else None
+    if setting and (setting / MARKER).is_file():
+        return setting, "setting", None
+    start = Path.cwd().resolve()
+    for folder in (start, *start.parents):
+        if (folder / MARKER).is_file():
+            return guard(folder, args), "marker", None
+    return None, None, setting or guard(full_path(DEFAULT_WORKSPACE), args)
+
+
+def require_workspace(args):
+    root, _, suggested = find_workspace(args)
+    if root is None:
+        raise FitmarkError("no_workspace", f"No Fitmark workspace. Suggested path: {suggested}")
+    return root
+
+
+def write_atomic(path, text):
+    handle, temp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    with os.fdopen(handle, "w") as stream:
+        stream.write(text)
+    os.replace(temp, path)
+
+
+def read_job(path):
+    try:
+        return json.loads(path.read_text())
+    except ValueError as error:
+        raise FitmarkError("bad_job_file", f"{path} cannot be read: {error}") from error
+
+
+def write_job(path, job):
+    # JSON is valid YAML, so job.yaml needs no YAML library. Only scripts write this file.
+    write_atomic(path, json.dumps(job, indent=2, ensure_ascii=False) + "\n")
+
+
+def all_jobs(root):
+    for path in sorted((root / "clients").glob("*/*/job.yaml")):
+        yield path, read_job(path)
+
+
+def find_job(root, spec_id):
+    for path, job in all_jobs(root):
+        if job["spec_id"] == spec_id:
+            return path, job
+    raise FitmarkError("unknown_job", f"No job with spec_id {spec_id}")
+
+
+def match_names(text):
+    inline = re.search(r"^match:\s*\[(.*)\]\s*$", text, re.M)
+    if inline:
+        items = inline[1].split(",")
+    else:
+        block = re.search(r"^match:\s*\n((?:[ \t]*-[ \t]*.+\n?)+)", text, re.M)
+        items = re.findall(r"-[ \t]*(.+)", block[1]) if block else []
+    return [item.strip().strip("\"'") for item in items if item.strip()]
+
+
+def client_slug(root, name):
+    wanted = slug(name, "client")
+    for path in sorted((root / "agency" / "clients").glob("*.yaml")):
+        names = match_names(path.read_text())
+        if wanted == path.stem or wanted in [slug(n, "client") for n in names]:
+            return path.stem
+    return wanted
+
+
+def saved_versions(job_dir):
+    versions = []
+    for path in (job_dir / "spec").glob("v*/spec.json"):
+        number = path.parent.name[1:]
+        if number.isdigit():
+            versions.append(int(number))
+    return versions
+
+
+def free_path(folder, stem, suffix):
+    """Return folder/stem+suffix, adding -2, -3 and so on until nothing would be overwritten."""
+    path = folder / f"{stem}{suffix}"
+    number = 2
+    while path.exists():
+        path = folder / f"{stem}-{number}{suffix}"
+        number += 1
+    return path
+
+
+def cmd_init(args):
+    root = guard(full_path(args.path), args)
+    if root.exists() and not root.is_dir():
+        raise FitmarkError("not_a_folder", f"{root} is a file")
+    for folder in ("agency/brand", "agency/criteria", "agency/clients", "clients"):
+        (root / folder).mkdir(parents=True, exist_ok=True)
+    marker = root / MARKER
+    if marker.exists():
+        return {"status": "exists", "root": str(root)}
+    created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    write_atomic(
+        marker,
+        f"schema_version: 1\nagency: {json.dumps(args.agency, ensure_ascii=False)}\n"
+        f'created_at: "{created}"\n',
+    )
+    return {"status": "created", "root": str(root)}
+
+
+def cmd_resolve(args):
+    root, found_by, suggested = find_workspace(args)
+    if root is None:
+        return {"status": "no_workspace", "suggested_path": str(suggested)}
+    return {
+        "status": "ok",
+        "root": str(root),
+        "found_by": found_by,
+        "agency_dir": str(root / "agency"),
+        "profile_exists": (root / "agency" / "profile.yaml").is_file(),
+    }
+
+
+def cmd_job(args):
+    root = require_workspace(args)
+    client = client_slug(root, args.client)
+    role = slug(args.role, "role")
+    spec_id = f"{client}-{role}"
+    job_dir = root / "clients" / client / role
+    job_file = job_dir / "job.yaml"
+
+    for path, job in all_jobs(root):
+        if job["spec_id"] == spec_id and path != job_file:
+            raise FitmarkError("spec_id_clash", f"{spec_id} is already used by {path.parent}")
+
+    exists = job_file.is_file()
+    job = read_job(job_file) if exists else None
+    if args.create:
+        for folder in ("intake", "spec", "candidates"):
+            (job_dir / folder).mkdir(parents=True, exist_ok=True)
+        if not exists:
+            job = {
+                "spec_id": spec_id,
+                "client": args.client,
+                "client_slug": client,
+                "job_slug": role,
+                "role": args.role,
+                "status": "intake",
+                "current_spec_version": 0,
+                "submittals": [],
+            }
+            write_job(job_file, job)
+
+    version = max(saved_versions(job_dir), default=0) + 1
+    client_name = readable(job["client"] if job else args.client)
+    role_name = readable(job["role"] if job else args.role)
+    spec_dir = job_dir / "spec" / f"v{version}"
+    outputs = {
+        "spec_json": str(spec_dir / "spec.json"),
+        "spec_document": str(spec_dir / f"{client_name} – {role_name} – Job spec v{version}.docx"),
+        "confirmation_email": str(spec_dir / "confirmation-email.txt"),
+        "intake_dir": str(job_dir / "intake"),
+        "job_yaml": str(job_file),
+    }
+    if version > 1:
+        outputs["changes_from_previous"] = str(spec_dir / f"changes-from-v{version - 1}.md")
+    return {
+        "exists": exists,
+        "client_slug": client,
+        "job_slug": role,
+        "spec_id": spec_id,
+        "job_dir": str(job_dir),
+        "current_spec_version": job["current_spec_version"] if job else 0,
+        "next_spec_version": version,
+        "outputs": outputs,
+    }
+
+
+def initials(name):
+    return "".join(f"{word[0].upper()}." for word in name.split())
+
+
+def cmd_candidate(args):
+    root = require_workspace(args)
+    job_file, job = find_job(root, args.job)
+    version = job["current_spec_version"]
+    if version < 1:
+        raise FitmarkError("no_spec", f"{args.job} has no saved spec to assess against")
+
+    base = slug(args.name, "candidate")
+    candidates = job_file.parent / "candidates"
+    folder = candidates / base
+    if args.new:
+        folder = free_path(candidates, base, "")
+    exists = folder.is_dir()
+    if args.create:
+        (folder / "source").mkdir(parents=True, exist_ok=True)
+
+    title = readable(f"{initials(args.name)} – {job['role']} – {job['client']} v{version}")
+    return {
+        "exists": exists,
+        "slug": folder.name,
+        "candidate_dir": str(folder),
+        "source_dir": str(folder / "source"),
+        "spec_version": version,
+        "spec_json": str(job_file.parent / "spec" / f"v{version}" / "spec.json"),
+        "submittal_path": str(free_path(folder, f"submittal-s{version}", ".json")),
+        "document_path": str(free_path(folder, title, ".docx")),
+    }
+
+
+def record_spec(args, job_file, job):
+    if args.version is None:
+        raise FitmarkError("usage", "spec_saved needs --version")
+    spec = job_file.parent / "spec" / f"v{args.version}" / "spec.json"
+    if not spec.is_file():
+        raise FitmarkError("missing_file", f"{spec} does not exist")
+    job["current_spec_version"] = max(job["current_spec_version"], args.version)
+
+
+def record_submittal(args, job_file, job):
+    if not args.candidate or not args.file:
+        raise FitmarkError("usage", "submittal_saved needs --candidate and --file")
+    candidate = slug(args.candidate, "candidate")
+    name = Path(args.file).name
+    parsed = SUBMITTAL_FILE.fullmatch(name)
+    if not parsed:
+        raise FitmarkError("bad_file", f"{name} is not a submittal file name")
+    if not (job_file.parent / "candidates" / candidate / name).is_file():
+        raise FitmarkError("missing_file", f"{candidate}/{name} does not exist")
+    if not any(s["candidate"] == candidate and s["file"] == name for s in job["submittals"]):
+        job["submittals"].append(
+            {
+                "candidate": candidate,
+                "spec_version": int(parsed[1]),
+                "file": name,
+                "date": datetime.date.today().isoformat(),
+            }
+        )
+
+
+def record_status(args, job_file, job):
+    if args.status not in STATUSES:
+        raise FitmarkError("bad_status", f"Status must be one of {', '.join(STATUSES)}")
+    job["status"] = args.status
+
+
+RECORDERS = {
+    "spec_saved": record_spec,
+    "submittal_saved": record_submittal,
+    "status": record_status,
+}
+
+
+def cmd_record(args):
+    root = require_workspace(args)
+    job_file, job = find_job(root, args.job)
+    RECORDERS[args.event](args, job_file, job)
+    write_job(job_file, job)
+    return {"job": job, "job_yaml": str(job_file)}
+
+
+def stale_submittals(job):
+    latest = {}
+    for submittal in job["submittals"]:
+        current = latest.get(submittal["candidate"])
+        if current is None or submittal["spec_version"] >= current["spec_version"]:
+            latest[submittal["candidate"]] = submittal
+    return [
+        {"candidate": s["candidate"], "spec_version": s["spec_version"], "file": s["file"]}
+        for s in latest.values()
+        if s["spec_version"] < job["current_spec_version"]
+    ]
+
+
+def cmd_status(args):
+    root = require_workspace(args)
+    wanted = client_slug(root, args.client) if args.client else None
+    jobs = []
+    for _, job in all_jobs(root):
+        if wanted and job["client_slug"] != wanted:
+            continue
+        if args.open and job["status"] in CLOSED_STATUSES:
+            continue
+        jobs.append({**job, "stale_submittals": stale_submittals(job)})
+    return {"root": str(root), "jobs": jobs}
+
+
+def build_parser():
+    common = JsonParser(add_help=False)
+    common.add_argument("--workspace", default="", help="the Fitmark folder setting")
+    common.add_argument("--plugin-root", default="")
+    common.add_argument("--plugin-data", default="")
+
+    parser = JsonParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    def add(name, handler):
+        command = commands.add_parser(name, parents=[common])
+        command.set_defaults(handler=handler)
+        return command
+
+    init = add("init", cmd_init)
+    init.add_argument("--path", required=True)
+    init.add_argument("--agency")
+
+    add("resolve", cmd_resolve)
+
+    job = add("job", cmd_job)
+    job.add_argument("--client", required=True)
+    job.add_argument("--role", required=True)
+    job.add_argument("--create", action="store_true")
+
+    candidate = add("candidate", cmd_candidate)
+    candidate.add_argument("--job", required=True, help="spec_id")
+    candidate.add_argument("--name", required=True)
+    candidate.add_argument("--create", action="store_true")
+    candidate.add_argument(
+        "--new", action="store_true", help="a different person who shares this name"
+    )
+
+    record = add("record", cmd_record)
+    record.add_argument("--job", required=True, help="spec_id")
+    record.add_argument("--event", required=True, choices=sorted(RECORDERS))
+    record.add_argument("--version", type=int)
+    record.add_argument("--candidate")
+    record.add_argument("--file")
+    record.add_argument("--status")
+
+    status = add("status", cmd_status)
+    status.add_argument("--client")
+    status.add_argument("--open", action="store_true")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        result = args.handler(args)
+    except FitmarkError as error:
+        print(json.dumps({"error": str(error), "code": error.code}, ensure_ascii=False))
+        return 1
+    except OSError as error:
+        print(json.dumps({"error": str(error), "code": "os_error"}, ensure_ascii=False))
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
