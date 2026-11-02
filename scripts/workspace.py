@@ -654,4 +654,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Under a non-UTF-8 locale Python decodes arguments and paths with that locale, which can't
+    # hold every name. Run again in UTF-8 mode, which covers all of them at once.
+    if sys.getfilesystemencoding().lower() != "utf-8" and not sys.flags.utf8_mode:
+        os.execv(sys.executable, [sys.executable, "-X", "utf8", *sys.argv])
     sys.exit(main())
