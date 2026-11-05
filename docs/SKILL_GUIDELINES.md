@@ -57,7 +57,7 @@ Pass the same `--plugin-root` and `--plugin-data` values on the command line of 
 
 `candidate` with `create` also needs a `ref` that stays the same if the step is retried, such as the CV file name. A retry with the same ref gets the paths it reserved until its submittal is recorded, even if one file was already written, so it leaves no empty files behind. With `new`, a retry after anything is saved in that person's folder, even a CV, is treated as another person.
 
-For a candidate, `exists: true` means a folder with that name exists, not that it's the same person. Check with the recruiter, then use `new` with a `ref` for someone else. If the script returns `ambiguous_candidate`, ask which person and pass their folder as `slug`, keeping their real name as `name`. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
+For a candidate, `exists: true` means a folder with that name exists, not that it's the same person. Check with the recruiter, then use `new` with a `ref` for someone else. If the script returns `ambiguous_candidate`, ask which person and pass their folder as `slug`, keeping their real name as `name`. If Python can't run, follow `${CLAUDE_PLUGIN_ROOT}/references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
 
 ## Data
 
