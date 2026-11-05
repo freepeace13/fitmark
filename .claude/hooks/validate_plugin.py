@@ -34,7 +34,7 @@ def main():
             timeout=80,
         )
     except subprocess.TimeoutExpired:
-        block(f"`claude plugin validate .` timed out after 80s after editing {rel}. Re-run it manually.")
+        block(f"`claude plugin validate .` timed out after 80s (edited {rel}).")
         return 0
     if result.returncode != 0:
         output = result.stdout + result.stderr
