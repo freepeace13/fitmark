@@ -1463,3 +1463,137 @@ def test_script_uses_only_the_standard_library():
         cwd="/",
     )
     assert done.returncode == 0, done.stderr
+
+
+# Spec versions after a later save
+
+
+def test_a_retry_after_a_later_save_gets_a_newer_version(ws):
+    in_ws(ws, "job", *ACME, "--create", "--ref", "a")
+    in_ws(ws, "job", *ACME, "--create", "--ref", "b")
+    Path(ws / "clients/acme-corp/senior-laravel-developer/spec/v2/spec.json").write_text("{}")
+    in_ws(ws, "record", "--job", ACME_ID, "--event", "spec_saved", "--version", 2)
+    retry = in_ws(ws, "job", *ACME, "--create", "--ref", "a")
+    assert retry["next_spec_version"] == 3
+    assert retry["outputs"]["changes_from_previous"].endswith("spec/v3/changes-from-v2.md")
+    assert in_ws(ws, "job", *ACME, "--create", "--ref", "a")["next_spec_version"] == 3
+    Path(retry["outputs"]["spec_json"]).write_text("{}")
+    in_ws(ws, "record", "--job", ACME_ID, "--event", "spec_saved", "--version", 3)
+    assert in_ws(ws, "job", *ACME)["current_spec_version"] == 3
+
+
+def test_record_refuses_a_version_older_than_the_current_one(ws):
+    old = in_ws(ws, "job", *ACME, "--create", "--ref", "a")
+    in_ws(ws, "job", *ACME, "--create", "--ref", "b")
+    Path(old["job_dir"], "spec/v2/spec.json").write_text("{}")
+    in_ws(ws, "record", "--job", ACME_ID, "--event", "spec_saved", "--version", 2)
+    Path(old["outputs"]["spec_json"]).write_text("{}")
+    out = fail(
+        "record", "--job", ACME_ID, "--event", "spec_saved", "--version", 1, "--workspace", ws
+    )
+    assert out["code"] == "stale_version"
+    assert in_ws(ws, "job", *ACME)["current_spec_version"] == 2
+
+
+def test_recording_the_current_version_again_is_allowed(ws):
+    n = saved_spec(ws)
+    in_ws(ws, "record", "--job", ACME_ID, "--event", "spec_saved", "--version", n)
+    assert in_ws(ws, "job", *ACME)["current_spec_version"] == n
+
+
+# Client rule files
+
+
+@pytest.mark.parametrize(
+    ("file_name", "expected"),
+    [("Foo Bar.yaml", "foo-bar"), ("a--b.yaml", "a-b"), ("Foo.Bar.yaml", "foo-bar")],
+)
+def test_a_rule_file_name_is_made_into_a_slug(ws, file_name, expected):
+    (ws / "agency/clients" / file_name).write_text("match: Foo\n")
+    out = in_ws(ws, "job", "--client", "Foo", "--role", "Dev")
+    assert out["client_slug"] == expected
+    assert out["spec_id"] == f"{expected}--dev"
+    assert Path(out["job_dir"]) == ws.resolve() / "clients" / expected / "dev"
+
+
+def test_a_rule_file_name_with_capitals_matches_its_client(ws):
+    (ws / "agency/clients/Acme.yaml").write_text("name: Acme\n")
+    assert in_ws(ws, "job", "--client", "Acme", "--role", "Dev")["client_slug"] == "acme"
+
+
+def test_a_rule_file_name_with_no_letters_cannot_leave_the_clients_folder(ws):
+    (ws / "agency/clients/...yaml").write_text("match: Baz\n")
+    out = in_ws(ws, "job", "--client", "Baz", "--role", "Dev", "--create", "--ref", "r")
+    assert out["client_slug"] == "baz"
+    assert Path(out["job_dir"]) == ws.resolve() / "clients/baz/dev"
+    assert not (ws / "dev").exists()
+
+
+def test_a_file_named_for_the_client_beats_an_earlier_match_list(ws):
+    (ws / "agency/clients/aaa.yaml").write_text("match: Zeta\n")
+    (ws / "agency/clients/zeta.yaml").write_text("name: Zeta\n")
+    out = in_ws(ws, "job", "--client", "Zeta", "--role", "Dev")
+    assert out["client_slug"] == "zeta"
+    assert out["spec_id"] == "zeta--dev"
+
+
+# A repeated ref for different people
+
+
+def new_person(ws, ref):
+    return in_ws(
+        ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--new", "--ref", ref, "--create"
+    )
+
+
+def test_a_ref_reused_after_work_is_saved_is_another_person(ws):
+    saved_spec(ws)
+    saved_submittal(ws)
+    second = new_person(ws, "cv.pdf")
+    assert second["slug"] == "jane-doe-2"
+    Path(second["submittal_path"]).write_text("{}")
+    assert new_person(ws, "cv.pdf")["slug"] == "jane-doe-3"
+
+
+def test_a_ref_reused_after_a_cv_is_saved_is_another_person(ws):
+    saved_spec(ws)
+    saved_submittal(ws)
+    second = new_person(ws, "cv.pdf")
+    Path(second["source_dir"], "cv.pdf").write_text("cv")
+    assert new_person(ws, "cv.pdf")["slug"] == "jane-doe-3"
+
+
+def test_a_finder_file_is_not_a_persons_work(ws):
+    saved_spec(ws)
+    saved_submittal(ws)
+    second = new_person(ws, "cv.pdf")
+    Path(second["candidate_dir"], ".DS_Store").write_text("x")
+    assert new_person(ws, "cv.pdf")["slug"] == "jane-doe-2"
+
+
+# Options that stay on the command line
+
+
+def with_stdin(payload, *args):
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), *map(str, args), "--args-stdin"],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+    )
+    return done.returncode, json.loads(done.stdout)
+
+
+@pytest.mark.parametrize("key", ["plugin-data", "plugin-root", "args-stdin"])
+def test_stdin_cannot_set_a_command_line_option(key):
+    code, out = with_stdin({key: ""}, "resolve")
+    assert code == 1
+    assert out["code"] == "bad_args"
+
+
+@pytest.mark.parametrize("key", ["plugin-data", "plugin-d", "plugin-da"])
+def test_stdin_cannot_turn_off_the_data_folder_guard(tmp_path, key):
+    data = tmp_path / "data"
+    code, _ = with_stdin({key: "", "path": str(data), "agency": "A"}, "init", "--plugin-data", data)
+    assert code != 0
+    assert not (data / "fitmark.yaml").exists()

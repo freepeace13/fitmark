@@ -36,6 +36,7 @@ LOCK_FILE = ".job.lock"
 LOCK_WAIT_SECONDS = 10
 REF_FILE = ".ref"  # in a claimed folder: which person or run it belongs to
 SUBMITTAL_FILE = re.compile(r"submittal-s(\d+)(?:-\d+)?\.json")
+COMMAND_LINE_ONLY = ("plugin-root", "plugin-data", "args-stdin")  # never taken from stdin
 
 
 class FitmarkError(Exception):
@@ -350,9 +351,17 @@ def rule_slugs(path):
 
 def client_slug(root, name):
     wanted = slug(name, "client")
+    rules = []
     for path in sorted((root / "agency" / "clients").glob("*.yaml")):
-        if wanted == path.stem or wanted in rule_slugs(path):
-            return path.stem
+        # The file name becomes a folder and part of a spec_id, so it must be a real slug.
+        with contextlib.suppress(FitmarkError):
+            rules.append((slug(path.stem, "client file"), path))
+    # A file named for this client wins over another file's match list, whatever the order.
+    if any(stem == wanted for stem, _ in rules):
+        return wanted
+    for stem, path in rules:
+        if wanted in rule_slugs(path):
+            return stem
     return wanted
 
 
@@ -405,10 +414,15 @@ def has_work(folder):
 
 
 def next_version(job_dir, ref):
-    """The unused version this ref already claimed, otherwise one above every claimed version."""
+    """The version this ref already claimed, otherwise one above every claimed version.
+
+    A claimed version is only reused above all saved work: a spec written below a later save
+    could never become the current one.
+    """
     folders = version_folders(job_dir)
+    last_saved = max((number for number, f in folders.items() if has_work(f)), default=0)
     for number, folder in sorted(folders.items()):
-        if ref and folder_ref(folder) == ref and not has_work(folder):
+        if ref and number > last_saved and folder_ref(folder) == ref:
             return number
     return max(folders, default=0) + 1
 
@@ -558,6 +572,11 @@ def same_name_folders(candidates, base):
     return [path for _, path in sorted(found)]
 
 
+def holds_a_persons_work(folder):
+    """Anything saved for this person, including a CV in source/. Hidden files aren't work."""
+    return any(not p.name.startswith(".") and is_saved(p) for p in folder.rglob("*"))
+
+
 def choose_candidate_folder(args, candidates, base):
     folders = same_name_folders(candidates, base)
     names = [path.name for path in folders]
@@ -568,9 +587,10 @@ def choose_candidate_folder(args, candidates, base):
             )
         return candidates / args.slug
     if args.new:
-        # The same ref is a retry for the same person; only an empty folder couldn't say which.
+        # The same ref is a retry only until work is saved. After that it may be someone else
+        # whose file has the same name, such as cv.pdf, so they must not share a case file.
         for folder in folders:
-            if folder_ref(folder) == args.ref:
+            if folder_ref(folder) == args.ref and not holds_a_persons_work(folder):
                 return folder
         return free_path(candidates, base, "")
     if len(folders) > 1:
@@ -631,7 +651,13 @@ def record_spec(args, job_file, job):
     spec = job_file.parent / "spec" / f"v{args.version}" / "spec.json"
     if not is_saved(spec):
         raise FitmarkError("missing_file", f"{spec} has not been written")
-    job["current_spec_version"] = max(job["current_spec_version"], args.version)
+    if args.version < job["current_spec_version"]:
+        raise FitmarkError(
+            "stale_version",
+            f"v{args.version} is older than the current v{job['current_spec_version']}; "
+            "run job with create again to get a newer version",
+        )
+    job["current_spec_version"] = args.version
 
 
 def submittal_candidate(args, candidates):
@@ -742,7 +768,8 @@ def build_parser():
     commands = parser.add_subparsers(dest="command", required=True)
 
     def add(name, handler):
-        command = commands.add_parser(name, parents=[common])
+        # No shortened options: --plugin-d in stdin would otherwise reach --plugin-data.
+        command = commands.add_parser(name, parents=[common], allow_abbrev=False)
         command.set_defaults(handler=handler)
         return command
 
@@ -795,6 +822,8 @@ def stdin_arguments():
     for key, value in values.items():
         if not re.fullmatch(r"[a-z][a-z-]*", key):
             raise FitmarkError("bad_args", f"{key!r} is not an option name")
+        if key in COMMAND_LINE_ONLY:
+            raise FitmarkError("bad_args", f"{key} must be on the command line")
         if value is True:
             options.append(f"--{key}")
         elif isinstance(value, (str, int)) and value is not False:

