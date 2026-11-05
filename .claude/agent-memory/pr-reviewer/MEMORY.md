@@ -12,6 +12,7 @@ Committed to the repo and shared by everyone who runs the agent. Keep it short: 
 
 - PR #2 (2026-11-05): owner confirmed all 3 findings as drafted (Outputs block fits only intake; `candidate --create` retry leaves empty files; test helper `HOME` defaults to repo root). Posted as one COMMENT review.
 - PR #2 round 2 (2026-11-05, head 9ad0306): rounds 1 #1 and #3 fixed, #2 partly. Drafted 4 new minors (partial-save retry leaves an empty file; `.runs.json` can give two refs the same paths after empties are deleted; submittal Outputs steps reserve before the `exists` check; intake step says write to every `outputs` path, incl. `job_yaml`). Owner confirmed all 4; posted as one COMMENT review, then fixed.
+- PR #2 round 3 (2026-11-05, head c4545f7): all 4 round-2 findings verified fixed by repro; no new findings drafted; considered safe to merge. Not raised (known `--new` design): a `--new` retry after a partial write still makes a new person folder, despite the "even if one file was already written" line in `docs/SKILL_GUIDELINES.md`.
 
 ## False positives to stop raising
 
