@@ -6,7 +6,7 @@ Grouped by capability area. Versions follow semver, with one version for the who
 
 ### Agency recruiting
 
-- `intake-to-job-spec` skill and `/fitmark:intake` command, with Markdown spec output for now.
+- `intake` skill (`/fitmark:intake`), with Markdown spec output for now.
 - Job spec schema and `validate_json.py`.
 - Synthetic intake fixtures and golden specs.
 
