@@ -1,0 +1,99 @@
+{
+  "$schema_version": "1.0",
+  "spec_id": "northwind-financial-controller",
+  "version": 1,
+  "created_at": "2026-11-04",
+  "client": "Northwind Logistics",
+  "role_title": "Financial Controller",
+  "recruiter": "Sam Reyes",
+  "status": "draft",
+  "summary": "The current controller is retiring in March. The hire takes over the monthly close for a multi-entity group.",
+  "must_haves": [
+    {
+      "id": "mh-1",
+      "text": "Has closed monthly books and consolidated at least three entities",
+      "client_quote": "if they haven't consolidated at least three entities, they'll drown",
+      "how_to_verify": "Employment history and screening call",
+      "inferred": false,
+      "source": "client"
+    },
+    {
+      "id": "mh-2",
+      "text": "CPA",
+      "client_quote": "has to be a CPA, the auditors insist",
+      "how_to_verify": "Licence check",
+      "inferred": false,
+      "source": "client"
+    }
+  ],
+  "nice_to_haves": [
+    {
+      "id": "nh-1",
+      "text": "NetSuite",
+      "client_quote": null,
+      "inferred": true,
+      "source": "client"
+    }
+  ],
+  "deal_breakers": [],
+  "compensation": {
+    "currency": null,
+    "min": null,
+    "max": null,
+    "period": null,
+    "notes": "Not discussed."
+  },
+  "location": {
+    "mode": "hybrid",
+    "timezone_overlap": null,
+    "notes": "3 days in the Makati office."
+  },
+  "interview_process": [],
+  "commercial_terms": {
+    "fee": null,
+    "exclusivity": null,
+    "deadline": null
+  },
+  "open_questions": [
+    "What is the salary band?",
+    "What are the interview steps?",
+    "What are the fee and the deadline?",
+    "How large is the team?",
+    "Will the hire present to the board, and if so is that a requirement?",
+    "What depth of experience does the role need from day one?"
+  ],
+  "rubric": [
+    {
+      "criterion_id": "mh-1",
+      "weight": 50,
+      "evidence": "Number of entities consolidated and ownership of the monthly close",
+      "anchors": {
+        "1": "No group close experience",
+        "2": "Contributed to a group close",
+        "3": "Owned a close consolidating 3 entities",
+        "4": "Owned a close consolidating more than 3 entities"
+      }
+    },
+    {
+      "criterion_id": "mh-2",
+      "weight": 40,
+      "evidence": "Active CPA licence",
+      "anchors": {
+        "1": "No CPA",
+        "4": "Active CPA licence"
+      }
+    },
+    {
+      "criterion_id": "nh-1",
+      "weight": 10,
+      "evidence": "NetSuite use in finance work",
+      "anchors": {
+        "1": "None",
+        "2": "Basic user",
+        "3": "Ran the close in NetSuite",
+        "4": "Led a NetSuite implementation or migration"
+      }
+    }
+  ],
+  "changelog": []
+}

@@ -12,3 +12,6 @@ test-reports/
 /fitmark.yaml
 /agency/
 /clients/
+
+# Agency profiles are private and never belong in this repo
+.fitmark/

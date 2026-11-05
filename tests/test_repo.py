@@ -14,6 +14,7 @@ SYNTHETIC_DOMAINS = {"example.com", "example.org", "example.net"}
 NON_RUNTIME_BUDGET_BYTES = 5 * 1024 * 1024
 EMAIL = re.compile(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
 PHONE = re.compile(r"(?<![\w.-])\+?\d[\d ()-]{8,}\d(?![\w-])")
+ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 
 
@@ -31,6 +32,14 @@ def frontmatter_keys(text):
 def skill_names():
     skills = ROOT / "skills"
     return {p.name for p in skills.iterdir() if p.is_dir()} if skills.is_dir() else set()
+
+
+def phone_numbers(text):
+    return [match for match in PHONE.findall(text) if not ISO_DATE.fullmatch(match)]
+
+
+def test_phone_scan_ignores_iso_dates_only():
+    assert phone_numbers("created 2026-11-03, call +63 917 555 0100") == ["+63 917 555 0100"]
 
 
 def test_names_and_versions_match():
@@ -176,7 +185,7 @@ def test_fixtures_contain_no_real_contact_details():
             for domain in EMAIL.findall(text)
             if domain.lower() not in SYNTHETIC_DOMAINS
         ]
-        problems += [f"{path}: phone {phone}" for phone in PHONE.findall(text)]
+        problems += [f"{path}: phone {phone}" for phone in phone_numbers(text)]
     assert not problems, "\n".join(problems)
 
 

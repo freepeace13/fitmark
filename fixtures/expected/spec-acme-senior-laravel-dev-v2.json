@@ -1,0 +1,151 @@
+{
+  "$schema_version": "1.0",
+  "spec_id": "acme-senior-laravel-dev",
+  "version": 2,
+  "created_at": "2026-11-10",
+  "client": "Acme Corp",
+  "role_title": "Senior Laravel Developer",
+  "recruiter": "Jane Doe",
+  "status": "draft",
+  "summary": "The person who knows Acme's Laravel checkout monolith is moving to a product role. Within six months the hire owns that system and has started splitting out payments.",
+  "must_haves": [
+    {
+      "id": "mh-1",
+      "text": "5+ years running Laravel in production",
+      "client_quote": "They need to have run Laravel in prod for years, at least five.",
+      "how_to_verify": "Employment history and technical screen",
+      "inferred": false,
+      "source": "client"
+    },
+    {
+      "id": "mh-2",
+      "text": "Has operated queues in production",
+      "client_quote": "has operated queues in production",
+      "how_to_verify": "Technical screen: what was operated and how failures were handled",
+      "inferred": false,
+      "source": "client"
+    },
+    {
+      "id": "mh-3",
+      "text": "Has run production workloads on AWS",
+      "client_quote": "We need someone who has run production workloads on AWS",
+      "how_to_verify": "Employment history and technical screen",
+      "inferred": false,
+      "source": "client"
+    }
+  ],
+  "nice_to_haves": [
+    {
+      "id": "nh-1",
+      "text": "Vue 3 or Inertia",
+      "client_quote": "Vue 3 or Inertia would be great, the admin is moving there.",
+      "inferred": false,
+      "source": "client"
+    }
+  ],
+  "deal_breakers": [
+    "Fewer than four hours of overlap with UTC+8"
+  ],
+  "compensation": {
+    "currency": "USD",
+    "min": 6000,
+    "max": 7500,
+    "period": "month",
+    "notes": ""
+  },
+  "location": {
+    "mode": "remote",
+    "timezone_overlap": "At least 4h with UTC+8",
+    "notes": "Quarterly meetup in Manila, paid by the company."
+  },
+  "interview_process": [
+    "Tech screen with Marco",
+    "Pairing session",
+    "Founder call"
+  ],
+  "commercial_terms": {
+    "fee": "20 percent, per usual agreement",
+    "exclusivity": "Exclusive for four weeks",
+    "deadline": "First profiles by 20 November"
+  },
+  "open_questions": [],
+  "rubric": [
+    {
+      "criterion_id": "mh-1",
+      "weight": 40,
+      "evidence": "Years and scale of production Laravel work",
+      "anchors": {
+        "1": "No production Laravel",
+        "2": "Under 5 years, or support work only",
+        "3": "5+ years building production systems",
+        "4": "5+ years, owned production systems end to end"
+      }
+    },
+    {
+      "criterion_id": "mh-2",
+      "weight": 20,
+      "evidence": "Queues operated in production and failures handled",
+      "anchors": {
+        "1": "No production queues",
+        "2": "Used queues others operated",
+        "3": "Operated queues in production",
+        "4": "Operated and tuned queues, including incidents"
+      }
+    },
+    {
+      "criterion_id": "mh-3",
+      "weight": 30,
+      "evidence": "AWS services run in production",
+      "anchors": {
+        "1": "None",
+        "2": "Deployed to AWS with support",
+        "3": "Ran production workloads on AWS",
+        "4": "Designed and owned production AWS infrastructure"
+      }
+    },
+    {
+      "criterion_id": "nh-1",
+      "weight": 10,
+      "evidence": "Vue 3 or Inertia work in shipped products",
+      "anchors": {
+        "1": "None",
+        "2": "Older Vue or small projects",
+        "3": "Shipped features in Vue 3 or Inertia",
+        "4": "Led a Vue 3 or Inertia frontend"
+      }
+    }
+  ],
+  "changelog": [
+    {
+      "version": 2,
+      "date": "2026-11-10",
+      "source": "client email from Priya, 2026-11-10",
+      "changes": [
+        {
+          "field": "must_haves",
+          "from": null,
+          "to": "mh-3: Has run production workloads on AWS (was nh-2, a nice-to-have)",
+          "may_invalidate_submittals": true
+        },
+        {
+          "field": "must_haves.mh-2",
+          "from": "Has operated queues at high volume",
+          "to": "Has operated queues in production",
+          "may_invalidate_submittals": true
+        },
+        {
+          "field": "compensation",
+          "from": "Not set",
+          "to": "USD 6,000 to 7,500 a month",
+          "may_invalidate_submittals": true
+        },
+        {
+          "field": "rubric",
+          "from": "mh-1 40, mh-2 40, nh-1 10, nh-2 10",
+          "to": "mh-1 40, mh-2 20, mh-3 30, nh-1 10",
+          "may_invalidate_submittals": false
+        }
+      ]
+    }
+  ]
+}
