@@ -4,7 +4,7 @@
 
 Fitmark is a Claude plugin for recruitment, hiring and talent work. This repository is both the marketplace and the plugin: one install, one version, one agency profile.
 
-> **Status: early development.** `/fitmark:intake` is the first working command. It writes the spec as Markdown for now, and agency profiles are read but not yet validated. The other commands below have not shipped.
+> **Status: early development.** The manifests, core rules, workspace script and CI are in place, and `/fitmark:intake` is the first working command. It writes the spec as Markdown for now, and agency profiles are read but not yet validated. The other commands below have not shipped.
 
 ## Install
 
@@ -15,14 +15,21 @@ In Claude Code:
 /plugin install fitmark@fitmark
 ```
 
+When you enable the plugin, Claude Code asks for your Fitmark folder. Keep the default, `~/Fitmark`, or leave it blank and choose on first use.
+
 ## Planned for v0.1: agency recruiting
 
-| Command | Job |
+| Shortcut | Job |
 | --- | --- |
-| `/fitmark:intake` | Client intake transcript or notes become a versioned job spec, screening rubric and confirmation email. |
+| `/fitmark:setup` | Past submittals, a brand guide and scorecards become a validated agency profile. Also runs a health check and profile edits. |
+| `/fitmark:intake` | Client intake transcript or notes become a versioned job spec, screening rubric and confirmation email. A change to an existing job produces the next version. |
 | `/fitmark:submittal` | A CV and screening notes become a branded client-ready profile with a requirement-by-requirement evidence table. |
 | `/fitmark:spec-diff` | Two spec versions become a change log and a list of affected submitted candidates. |
-| `/fitmark:setup` | Past submittals, a brand guide and scorecards become a validated agency profile. |
+| `/fitmark:status` | Lists jobs, current spec versions, submittals and any assessed against an old spec. |
+
+## Your workspace
+
+Everything sits in one folder, laid out like the desk: client, then job, then candidate. `agency/` holds rules with no candidate data, so a team can share it. `clients/` holds case files and stays private. See [the workspace layout](references/workspace-layout.md).
 
 ## Core rules
 

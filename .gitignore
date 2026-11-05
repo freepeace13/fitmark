@@ -8,5 +8,10 @@ __pycache__/
 # Test reports stay local
 test-reports/
 
+# Workspaces hold private agency and candidate data and never belong in this repo
+/fitmark.yaml
+/agency/
+/clients/
+
 # Agency profiles are private and never belong in this repo
 .fitmark/
