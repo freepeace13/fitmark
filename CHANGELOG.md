@@ -11,6 +11,7 @@ Grouped by capability area. Versions follow semver, with one version for the who
 - Synthetic intake fixtures and golden specs.
 - `intake` reads its templates from its own skill folder, keeps refused and flagged requests out of the client email, quotes only the client's own words, and adds nothing to the summary that the intake doesn't say.
 - `intake` claims a spec version once per run, so an update no longer lands two versions above the last saved one.
+- `intake` confirmation emails no longer name a weekday the intake doesn't state.
 
 ### Foundation
 
