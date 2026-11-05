@@ -54,7 +54,7 @@ Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/validate_json.py" <spec> --schema jo
 ## Outputs
 Write each file only to a path the script returns. Never build a path yourself. In your reply, show paths relative to the workspace.
 
-1. Run `workspace.py job` with `client`, `role`, `create: true` and a `ref` that stays the same on a retry, such as the intake file name. Use the `outputs` it returns.
+1. Run `workspace.py job` with `client`, `role`, `create: true` and a `ref` that stays the same on a retry, such as the intake file name. Run it once per intake and use its `outputs` for every step below, including step 6. Once the spec is saved, never run it with `create` again: it would claim the next version and leave a gap.
 2. Write the spec to `outputs.spec_json`, then validate it (below).
 3. Write the rendered spec to `outputs.spec_document`: use `${CLAUDE_PLUGIN_ROOT}/scripts/render_doc.py` if it exists. Otherwise write Markdown from `${CLAUDE_PLUGIN_ROOT}/skills/intake/references/spec-template.md` to the same path with a `.md` extension, and say that DOCX rendering was skipped.
 4. Write the email to `outputs.confirmation_email`, from `${CLAUDE_PLUGIN_ROOT}/skills/intake/references/confirmation-email.md`. Refused and flagged requests never appear in the email: they go only in your reply, under "For your review". In update mode, also write the change log to `outputs.changes_from_previous`. Never write `job_yaml`: only the script writes it.
