@@ -30,12 +30,17 @@ def main():
     if command is None:
         notify_once(payload, "ruff", "ruff hook skipped: ruff isn't installed. Run `make install`.")
         return 0
-    result = subprocess.run(
-        [*command, "check", "--force-exclude", "--output-format", "concise", rel],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [*command, "check", "--force-exclude", "--output-format", "concise", rel],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+    except subprocess.TimeoutExpired:
+        block(f"ruff check timed out after 25s for {rel}. Re-run it manually.")
+        return 0
     if result.returncode != 0:
         output = result.stdout + result.stderr
         block(f"ruff check failed for {rel}. Fix these before moving on:\n{output}")

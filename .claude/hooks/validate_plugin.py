@@ -25,13 +25,17 @@ def main():
     if claude is None:
         notify_once(payload, "validate", "Plugin validation hook skipped: `claude` is not on PATH.")
         return 0
-    result = subprocess.run(
-        [claude, "plugin", "validate", "."],
-        cwd=repo_root(payload),
-        capture_output=True,
-        text=True,
-        timeout=80,
-    )
+    try:
+        result = subprocess.run(
+            [claude, "plugin", "validate", "."],
+            cwd=repo_root(payload),
+            capture_output=True,
+            text=True,
+            timeout=80,
+        )
+    except subprocess.TimeoutExpired:
+        block(f"`claude plugin validate .` timed out after 80s after editing {rel}. Re-run it manually.")
+        return 0
     if result.returncode != 0:
         output = result.stdout + result.stderr
         block(f"`claude plugin validate .` failed after editing {rel}:\n{output}")
