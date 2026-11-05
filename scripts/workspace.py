@@ -611,10 +611,12 @@ def read_runs(folder):
     return runs if isinstance(runs, dict) else {}
 
 
-def reserved_paths(folder, ref, version):
-    """The names this ref reserved for this spec version, while nothing is saved to either.
+def reserved_paths(folder, ref, version, job):
+    """The names this ref reserved for this spec version, until its submittal is recorded.
 
-    Once either holds work, the same ref is a new run and gets new names.
+    A run that wrote one file and failed before the other, or before record, is still the
+    same run, so its retry gets the same names. Once the submittal is recorded, the same ref
+    is a new run and gets new names.
     """
     run = read_runs(folder).get(ref)
     if not isinstance(run, dict) or run.get("version") != version:
@@ -625,14 +627,23 @@ def reserved_paths(folder, ref, version):
         if not isinstance(name, str) or not name or Path(name).name != name:
             return None
         path = folder / name
-        if not path.is_file() or is_saved(path):
+        if not path.is_file():
             return None
         paths.append(path)
-    return paths
+    recorded = any(
+        s["candidate"] == folder.name and s["file"] == paths[0].name for s in job["submittals"]
+    )
+    return None if recorded else paths
 
 
 def remember_reserved(folder, ref, version, submittal, document):
-    runs = read_runs(folder)
+    """Record which names this ref holds. Any other ref that named them has lost them."""
+    names = {submittal.name, document.name}
+    runs = {
+        key: run
+        for key, run in read_runs(folder).items()
+        if not (isinstance(run, dict) and names & {run.get("submittal"), run.get("document")})
+    }
     runs[ref] = {"version": version, "submittal": submittal.name, "document": document.name}
     write_atomic(folder / RUNS_FILE, json.dumps(runs, ensure_ascii=False, indent=2) + "\n")
 
@@ -669,7 +680,8 @@ def cmd_candidate(args):
             if args.new:
                 write_atomic(folder / REF_FILE, args.ref)
             # A retry with the same ref gets the names it reserved, so it leaves no empty files.
-            reused = reserved_paths(folder, args.ref, version)
+            # Read the job again under the lock, so a submittal recorded meanwhile counts.
+            reused = reserved_paths(folder, args.ref, version, read_job(job_file))
             if reused:
                 submittal, document = reused
                 for path in reused:

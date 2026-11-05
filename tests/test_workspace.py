@@ -814,13 +814,47 @@ def test_a_retry_with_the_same_ref_gets_the_names_it_reserved(ws):
     assert len(list(folder.glob("*.docx"))) == 1
 
 
-def test_a_ref_gets_new_names_once_its_work_is_saved(ws):
+def record_jane(ws, out):
+    in_ws(
+        ws, "record", "--job", ACME_ID, "--event", "submittal_saved",
+        "--candidate", out["slug"], "--file", out["submittal_path"],
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("written", ["submittal_path", "document_path", "both"])
+def test_a_retry_after_a_partial_write_gets_the_same_names(ws, written):
+    saved_spec(ws)
+    first = jane(ws, "--create", "--ref", "cv")
+    for key in ("submittal_path", "document_path") if written == "both" else (written,):
+        Path(first[key]).write_text("{}")
+    again = jane(ws, "--create", "--ref", "cv")
+    assert again["submittal_path"] == first["submittal_path"]
+    assert again["document_path"] == first["document_path"]
+    folder = Path(first["candidate_dir"])
+    outputs = [p for p in folder.iterdir() if p.is_file() and not p.name.startswith(".")]
+    assert sorted(outputs) == sorted(Path(first[k]) for k in ("submittal_path", "document_path"))
+
+
+def test_a_ref_gets_new_names_once_its_submittal_is_recorded(ws):
     saved_spec(ws)
     first = jane(ws, "--create", "--ref", "cv")
     Path(first["submittal_path"]).write_text("{}")
+    record_jane(ws, first)
     again = jane(ws, "--create", "--ref", "cv")
     assert Path(again["submittal_path"]).name == "submittal-s1-2.json"
     assert again["document_path"] != first["document_path"]
+
+
+def test_names_freed_by_deleting_empty_files_belong_to_one_ref(ws):
+    saved_spec(ws)
+    a = jane(ws, "--create", "--ref", "a")
+    for key in ("submittal_path", "document_path"):
+        Path(a[key]).unlink()
+    b = jane(ws, "--create", "--ref", "b")
+    assert b["submittal_path"] == a["submittal_path"]
+    a_again = jane(ws, "--create", "--ref", "a")
+    assert a_again["submittal_path"] != b["submittal_path"]
+    assert a_again["document_path"] != b["document_path"]
 
 
 def test_another_ref_is_another_run(ws):

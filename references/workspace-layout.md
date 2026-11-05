@@ -42,7 +42,7 @@ Fitmark/                                 # the workspace
 | Job document | `<Client> – <Role> – Job spec v<n>.docx`. |
 | Candidate document | `<Initials> – <Role> – <Client> v<n>.docx`, and `-2` on a repeat. Follow the profile's anonymisation for what goes inside it. |
 
-`candidate --create` reserves the submittal and document names as empty files, so parallel runs never share a path. It needs a `--ref`, and a retry with the same `--ref` gets the names it reserved until work is saved to them; `.runs.json` in the candidate folder records which ref reserved which names. An empty file is a run that didn't finish; it can't be recorded and is safe to delete.
+`candidate --create` reserves the submittal and document names as empty files, so parallel runs never share a path. It needs a `--ref`, and a retry with the same `--ref` gets the names it reserved until its submittal is recorded; `.runs.json` in the candidate folder records which ref holds which names, and only one ref holds a name at a time. An empty file is a run that didn't finish; it can't be recorded and is safe to delete.
 
 `job --create` makes the folder for the next spec version, so files can be saved straight to the paths it returns. A `.ref` file in a claimed folder records which run or person it belongs to.
 

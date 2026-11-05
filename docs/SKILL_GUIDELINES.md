@@ -35,14 +35,15 @@ Then add the Outputs steps for the skill's kind. Only a skill that writes a new 
 **Writes a spec version** (intake):
 
 1. Run `workspace.py job` with `client`, `role`, `create: true` and a `ref`.
-2. Write the files to the paths under `outputs`.
+2. Write the spec to `outputs.spec_json`, the document to `outputs.spec_document`, the email to `outputs.confirmation_email` and, when it is present, the change log to `outputs.changes_from_previous`. Never write `job_yaml`: only the script writes it.
 3. Run `workspace.py record` with `{"job": "<spec_id>", "event": "spec_saved", "version": <next_spec_version>}`. Until this runs, the version isn't current and `candidate` returns `no_spec`.
 
 **Writes a submittal** (submittal):
 
-1. Run `workspace.py candidate` with `job` (the `spec_id`), `name`, `create: true` and a `ref`.
-2. Write the submittal to `submittal_path` and the document to `document_path`.
-3. Run `workspace.py record` with `{"job": "<spec_id>", "event": "submittal_saved", "candidate": "<slug>", "file": "<submittal_path>"}`.
+1. Run `workspace.py candidate` with `job` (the `spec_id`) and `name`, without `create`, to find out who this is before anything is reserved. If it returns `exists: true` or `ambiguous_candidate`, check with the recruiter as described below.
+2. Run it again with `create: true` and a `ref`, adding `new` for someone else or `slug` for a named folder.
+3. Write the submittal to `submittal_path` and the document to `document_path`.
+4. Run `workspace.py record` with `{"job": "<spec_id>", "event": "submittal_saved", "candidate": "<slug>", "file": "<submittal_path>"}`.
 
 **Reads only** (such as status): run `workspace.py job` without `create`, or `workspace.py status`. Neither claims anything.
 
@@ -54,7 +55,7 @@ Pass the same `--plugin-root` and `--plugin-data` values on the command line of 
 
 `job` with `create` needs a `ref`: a value that stays the same if the step is retried, such as the intake file name. The same ref gets the same version until work is saved there or in a later version, and a different ref is a different run with its own version. An abandoned run leaves a gap in the version numbers.
 
-`candidate` with `create` also needs a `ref` that stays the same if the step is retried, such as the CV file name. A retry with the same ref gets the paths it reserved until work is saved to them, so it leaves no empty files behind.
+`candidate` with `create` also needs a `ref` that stays the same if the step is retried, such as the CV file name. A retry with the same ref gets the paths it reserved until its submittal is recorded, even if one file was already written, so it leaves no empty files behind.
 
 For a candidate, `exists: true` means a folder with that name exists, not that it's the same person. Check with the recruiter, then use `new` with a `ref` for someone else. If the script returns `ambiguous_candidate`, ask which person and pass their folder as `slug`, keeping their real name as `name`. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
 
