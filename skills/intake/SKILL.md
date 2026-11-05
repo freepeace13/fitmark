@@ -31,12 +31,13 @@ Write JSON matching `${CLAUDE_PLUGIN_ROOT}/schemas/job-spec.schema.json`. Set `s
 
 | Field | Content |
 | --- | --- |
-| `must_haves` | What the client said is essential. Ids are `mh-1`, `mh-2`. `client_quote` holds only the client's exact words that state the requirement, leaving out sensitive reasons such as staff departures; use `null` with `inferred: true` when the words are the recruiter's paraphrase or your inference. |
+| `must_haves` | What the client said is essential. Ids are `mh-1`, `mh-2`. `client_quote` holds only the client's exact words that state the requirement, leaving out sensitive reasons such as staff departures; use `null` with `inferred: true` when the words are the recruiter's paraphrase or your inference. In notes, only text in quotation marks is the client's own words; everything else is the recruiter's. |
+| `summary` | Only what the transcript or notes state. Don't add relationships, reporting lines or context the source doesn't give. |
 | `nice_to_haves` | What the client said would help. Ids are `nh-1`, `nh-2`. |
 | `deal_breakers` | Only what the client stated as ruling someone out. A knockout goes here alone, without a must-have or rubric criterion. |
 | Tentative statements | A "probably" or "maybe" goes in `open_questions`, until the client confirms it as a requirement. |
 | Unstated values | `null` or empty, plus an entry in `open_questions`. |
-| `rubric` | One criterion per requirement. `criterion_id` is exactly the requirement's id. Follow `references/rubric-guide.md`. |
+| `rubric` | One criterion per requirement. `criterion_id` is exactly the requirement's id. Follow `${CLAUDE_PLUGIN_ROOT}/skills/intake/references/rubric-guide.md`. |
 
 **Criteria library.** If the agency rules have criteria for this role family, add those the client did not cover as `nice_to_haves` with `source: "library"` and `inferred: true`. The client's words win on any conflict. Library knockouts go to `open_questions` for the client to confirm.
 
@@ -55,12 +56,12 @@ Write each file only to a path the script returns. Never build a path yourself. 
 
 1. Run `workspace.py job` with `client`, `role`, `create: true` and a `ref` that stays the same on a retry, such as the intake file name. Use the `outputs` it returns.
 2. Write the spec to `outputs.spec_json`, then validate it (below).
-3. Write the rendered spec to `outputs.spec_document`: use `${CLAUDE_PLUGIN_ROOT}/scripts/render_doc.py` if it exists. Otherwise write Markdown from `references/spec-template.md` to the same path with a `.md` extension, and say that DOCX rendering was skipped.
-4. Write the email to `outputs.confirmation_email`, from `references/confirmation-email.md`. In update mode, also write the change log to `outputs.changes_from_previous`. Never write `job_yaml`: only the script writes it.
+3. Write the rendered spec to `outputs.spec_document`: use `${CLAUDE_PLUGIN_ROOT}/scripts/render_doc.py` if it exists. Otherwise write Markdown from `${CLAUDE_PLUGIN_ROOT}/skills/intake/references/spec-template.md` to the same path with a `.md` extension, and say that DOCX rendering was skipped.
+4. Write the email to `outputs.confirmation_email`, from `${CLAUDE_PLUGIN_ROOT}/skills/intake/references/confirmation-email.md`. Refused and flagged requests never appear in the email: they go only in your reply, under "For your review". In update mode, also write the change log to `outputs.changes_from_previous`. Never write `job_yaml`: only the script writes it.
 5. Run `workspace.py record` with `{"job": "<spec_id from workspace.py>", "event": "spec_saved", "version": <next_spec_version>}`. Until this runs, the version isn't current.
 6. If the client sent the intake as a file or notes, save a dated copy in `outputs.intake_dir`.
 
-Pass every value from outside in the JSON on stdin, as in Start, and the same `--plugin-root` and `--plugin-data` on every command. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
+Pass every value from outside in the JSON on stdin, as in Start, and the same `--plugin-root` and `--plugin-data` on every command. If Python can't run, follow `${CLAUDE_PLUGIN_ROOT}/references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
 
 Then reply with these parts, in order:
 
