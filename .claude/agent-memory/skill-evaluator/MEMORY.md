@@ -1,0 +1,2 @@
+- [Headless run recipe](headless-run-recipe.md) — claude -p isolation flags, Read rules, brace-check block on heredoc JSON, narrow approval hook
+- [Intake skill findings](intake-skill-findings.md) — intake failures found and fixed 2026-11-06, low-severity items to watch, intake-02 fixture quirks

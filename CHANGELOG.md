@@ -17,6 +17,7 @@ Grouped by capability area. Versions follow semver, with one version for the who
 - CI: manifest, skill lint, fixture privacy and size budget checks.
 - Contribution, security and skill guidelines.
 - Fixture privacy scan no longer treats ISO dates as phone numbers.
+- Contributor tooling in `.claude/`: hooks that run ruff and the plugin validator after edits and refuse workspace data in the repo, the `new-skill` and `fitmark-conventions` skills, the `skill-evaluator` agent, and plugin-dev enabled for the project.
 
 ### Workspace
 
