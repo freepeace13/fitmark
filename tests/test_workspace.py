@@ -18,8 +18,17 @@ ACME = ["--client", "Acme Corp", "--role", "Senior Laravel Developer"]
 ACME_ID = "acme-corp--senior-laravel-developer"
 
 
+@pytest.fixture(autouse=True)
+def separate_home(tmp_path_factory, monkeypatch):
+    """Give every test a home outside the checkout, so nothing it runs writes into the plugin."""
+    monkeypatch.setitem(DEFAULT_HOME, "path", tmp_path_factory.mktemp("home"))
+
+
+DEFAULT_HOME = {}
+
+
 def run(*args, cwd=None, home=None):
-    env = {"HOME": str(home or cwd or ROOT), "PATH": ""}
+    env = {"HOME": str(home or cwd or DEFAULT_HOME["path"]), "PATH": ""}
     done = subprocess.run(
         [sys.executable, str(SCRIPT), *map(str, args)],
         capture_output=True,
@@ -64,7 +73,7 @@ def saved_spec(ws, version=None):
 
 
 def saved_submittal(ws, name="Jane Doe"):
-    cand = in_ws(ws, "candidate", "--job", ACME_ID, "--name", name, "--create")
+    cand = in_ws(ws, "candidate", "--job", ACME_ID, "--name", name, "--create", "--ref", "cv")
     path = Path(cand["submittal_path"])
     path.write_text("{}")
     in_ws(
@@ -190,7 +199,7 @@ def test_guard_refuses_a_candidate_folder_linked_into_the_plugin(ws, tmp_path):
     job_dir = Path(in_ws(ws, "job", *ACME)["job_dir"])
     (job_dir / "candidates" / "jane-doe").symlink_to(plugin)
     code, out = run(
-        "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create",
+        "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--ref", "cv",
         "--workspace", ws, "--plugin-root", plugin,
     )  # fmt: skip
     assert code == 1
@@ -633,7 +642,7 @@ def test_candidate_on_an_unknown_job_fails(ws):
 
 def test_candidate_paths(ws):
     saved_spec(ws)
-    out = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create")
+    out = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--ref", "cv")
     folder = Path(in_ws(ws, "job", *ACME)["job_dir"]) / "candidates" / "jane-doe"
     assert out["slug"] == "jane-doe"
     assert out["exists"] is False
@@ -788,6 +797,67 @@ def test_slug_must_be_an_existing_folder_for_that_name(ws, value):
     )
     assert code == 1
     assert out["code"] == "unknown_candidate"
+
+
+def jane(ws, *args):
+    return in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", *args)
+
+
+def test_a_retry_with_the_same_ref_gets_the_names_it_reserved(ws):
+    saved_spec(ws)
+    first = jane(ws, "--create", "--ref", "cv")
+    again = jane(ws, "--create", "--ref", "cv")
+    assert again["submittal_path"] == first["submittal_path"]
+    assert again["document_path"] == first["document_path"]
+    folder = Path(first["candidate_dir"])
+    assert sorted(p.name for p in folder.glob("submittal-*")) == ["submittal-s1.json"]
+    assert len(list(folder.glob("*.docx"))) == 1
+
+
+def test_a_ref_gets_new_names_once_its_work_is_saved(ws):
+    saved_spec(ws)
+    first = jane(ws, "--create", "--ref", "cv")
+    Path(first["submittal_path"]).write_text("{}")
+    again = jane(ws, "--create", "--ref", "cv")
+    assert Path(again["submittal_path"]).name == "submittal-s1-2.json"
+    assert again["document_path"] != first["document_path"]
+
+
+def test_another_ref_is_another_run(ws):
+    saved_spec(ws)
+    first = jane(ws, "--create", "--ref", "cv")
+    other = jane(ws, "--create", "--ref", "cv-rescreen")
+    assert other["submittal_path"] != first["submittal_path"]
+
+
+def test_a_retry_on_a_new_spec_gets_names_for_that_version(ws):
+    saved_spec(ws)
+    jane(ws, "--create", "--ref", "cv")
+    saved_spec(ws)
+    out = jane(ws, "--create", "--ref", "cv")
+    assert Path(out["submittal_path"]).name == "submittal-s2.json"
+    assert Path(out["document_path"]).name.endswith(" v2.docx")
+
+
+@pytest.mark.parametrize(
+    "content", ["not json", "[]", '{"cv": {"version": 1, "submittal": "../x"}}']
+)
+def test_a_damaged_runs_file_only_means_new_names(ws, content):
+    saved_spec(ws)
+    first = jane(ws, "--create", "--ref", "cv")
+    (Path(first["candidate_dir"]) / ".runs.json").write_text(content)
+    again = jane(ws, "--create", "--ref", "cv")
+    assert Path(again["submittal_path"]).name == "submittal-s1-2.json"
+
+
+@pytest.mark.parametrize("args", [("--create",), ("--ref", "cv")], ids=["create", "ref"])
+def test_candidate_refs_go_with_create_or_new(ws, args):
+    saved_spec(ws)
+    code, out = run(
+        "candidate", "--job", ACME_ID, "--name", "Jane Doe", *args, "--workspace", ws
+    )
+    assert code == 1
+    assert out["code"] == "usage"
 
 
 def test_new_and_slug_cannot_be_combined(ws):
@@ -1267,8 +1337,9 @@ def test_parallel_records_lose_nothing(ws):
 def test_parallel_candidates_get_different_paths(ws):
     saved_spec(ws)
     running = [
-        start("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--workspace", ws)
-        for _ in range(12)
+        start("candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--ref", f"run-{n}",
+              "--workspace", ws)
+        for n in range(12)
     ]
     results = []
     for process in running:
@@ -1313,7 +1384,7 @@ def test_a_lock_held_by_a_live_run_is_respected(ws):
 
 def test_a_reserved_empty_submittal_cannot_be_recorded(ws):
     saved_spec(ws)
-    cand = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create")
+    cand = in_ws(ws, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--ref", "cv")
     assert Path(cand["submittal_path"]).stat().st_size == 0
     code, out = run(
         "record", "--job", ACME_ID, "--event", "submittal_saved", "--candidate", "jane-doe",
@@ -1356,7 +1427,8 @@ def test_scripts_write_files_with_the_normal_permissions(tmp_path, umask, mode):
 def test_reserved_files_are_not_executable(ws):
     saved_spec(ws)
     out = run_with_umask(
-        0o022, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--workspace", ws
+        0o022, "candidate", "--job", ACME_ID, "--name", "Jane Doe", "--create", "--ref", "cv",
+        "--workspace", ws,
     )
     for key in ("submittal_path", "document_path"):
         assert Path(out[key]).stat().st_mode & 0o777 == 0o644

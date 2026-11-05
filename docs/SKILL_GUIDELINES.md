@@ -27,9 +27,24 @@ FITMARK_ARGS
 3. Read the agency's rules from the `agency_dir` it returns. With no profile, use defaults.
 
 ## Outputs
-Run `workspace.py job` with `create` and a `ref`, and write each file to the path it returns. Never build a path yourself.
-Then run `workspace.py record`, passing the candidate's `slug` and the full `submittal_path` for a submittal. In your reply, show paths relative to the workspace.
+Write each file only to a path the script returns. Never build a path yourself. In your reply, show paths relative to the workspace.
 ````
+
+Then add the Outputs steps for the skill's kind. Only a skill that writes a new spec version claims one: `job` with `create` claims a version for every new `ref`, so any other skill that calls it leaves gaps and pushes the next real version up.
+
+**Writes a spec version** (intake):
+
+1. Run `workspace.py job` with `client`, `role`, `create: true` and a `ref`.
+2. Write the files to the paths under `outputs`.
+3. Run `workspace.py record` with `{"job": "<spec_id>", "event": "spec_saved", "version": <next_spec_version>}`. Until this runs, the version isn't current and `candidate` returns `no_spec`.
+
+**Writes a submittal** (submittal):
+
+1. Run `workspace.py candidate` with `job` (the `spec_id`), `name`, `create: true` and a `ref`.
+2. Write the submittal to `submittal_path` and the document to `document_path`.
+3. Run `workspace.py record` with `{"job": "<spec_id>", "event": "submittal_saved", "candidate": "<slug>", "file": "<submittal_path>"}`.
+
+**Reads only** (such as status): run `workspace.py job` without `create`, or `workspace.py status`. Neither claims anything.
 
 ## Passing values to the script
 
@@ -39,7 +54,9 @@ Pass the same `--plugin-root` and `--plugin-data` values on the command line of 
 
 `job` with `create` needs a `ref`: a value that stays the same if the step is retried, such as the intake file name. The same ref gets the same version until work is saved there or in a later version, and a different ref is a different run with its own version. An abandoned run leaves a gap in the version numbers.
 
-For a candidate, `exists: true` means a folder with that name exists, not that it's the same person. Check with the recruiter, then use `new` with a `ref` for someone else, where the value stays the same if the step is retried, such as the CV file name. If the script returns `ambiguous_candidate`, ask which person and pass their folder as `slug`, keeping their real name as `name`. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
+`candidate` with `create` also needs a `ref` that stays the same if the step is retried, such as the CV file name. A retry with the same ref gets the paths it reserved until work is saved to them, so it leaves no empty files behind.
+
+For a candidate, `exists: true` means a folder with that name exists, not that it's the same person. Check with the recruiter, then use `new` with a `ref` for someone else. If the script returns `ambiguous_candidate`, ask which person and pass their folder as `slug`, keeping their real name as `name`. If Python can't run, follow `references/workspace-layout.md` by hand and list "workspace check" under skipped checks.
 
 ## Data
 

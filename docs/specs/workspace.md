@@ -17,7 +17,7 @@ Acceptance criteria for the workspace layer. Status boxes reflect what has been 
 - [x] A bad `job.yaml` blocks only its own job, and `status` reports it.
 - [x] Every failure is a JSON error, and an empty `spec.json` or submittal doesn't count as saved.
 - [x] Client `match` lists are read in every YAML form: one name, flow or block, multi-line, with comments.
-- [x] Parallel runs lose no recorded submittal and never share a candidate output path.
+- [x] Parallel runs lose no recorded submittal and never share a candidate output path, and a `candidate --create` retry with the same `ref` reuses its reserved paths instead of leaving empty files.
 - [x] Option values, including the folder setting, reach the script as JSON on stdin, so text with quotes or `$(...)` can't run a command when written as documented. Skills rely on Claude escaping the JSON; this is tested with a correctly written block, not in a real skill run.
 - [x] Files are UTF-8 under any locale, and a failed write leaves no temp file.
 

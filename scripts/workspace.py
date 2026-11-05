@@ -35,6 +35,7 @@ CLOSED_STATUSES = ("filled", "closed")
 LOCK_FILE = ".job.lock"
 LOCK_WAIT_SECONDS = 10
 REF_FILE = ".ref"  # in a claimed folder: which person or run it belongs to
+RUNS_FILE = ".runs.json"  # in a candidate folder: which run reserved which output names
 SUBMITTAL_FILE = re.compile(r"submittal-s(\d+)(?:-\d+)?\.json")
 COMMAND_LINE_ONLY = ("plugin-root", "plugin-data", "args-stdin")  # never taken from stdin
 
@@ -602,6 +603,40 @@ def choose_candidate_folder(args, candidates, base):
     return folders[0] if folders else candidates / base
 
 
+def read_runs(folder):
+    try:
+        runs = json.loads((folder / RUNS_FILE).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return {}
+    return runs if isinstance(runs, dict) else {}
+
+
+def reserved_paths(folder, ref, version):
+    """The names this ref reserved for this spec version, while nothing is saved to either.
+
+    Once either holds work, the same ref is a new run and gets new names.
+    """
+    run = read_runs(folder).get(ref)
+    if not isinstance(run, dict) or run.get("version") != version:
+        return None
+    paths = []
+    for key in ("submittal", "document"):
+        name = run.get(key)
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            return None
+        path = folder / name
+        if not path.is_file() or is_saved(path):
+            return None
+        paths.append(path)
+    return paths
+
+
+def remember_reserved(folder, ref, version, submittal, document):
+    runs = read_runs(folder)
+    runs[ref] = {"version": version, "submittal": submittal.name, "document": document.name}
+    write_atomic(folder / RUNS_FILE, json.dumps(runs, ensure_ascii=False, indent=2) + "\n")
+
+
 def cmd_candidate(args):
     root = require_workspace(args)
     job_file, job = find_job(root, args.job)
@@ -609,16 +644,19 @@ def cmd_candidate(args):
     if version < 1:
         raise FitmarkError("no_spec", f"{args.job} has no saved spec to assess against")
 
-    if bool(args.new) != bool(args.ref):
-        raise FitmarkError("usage", "--new and --ref go together: a ref says which person this is")
+    if args.create and not args.ref:
+        raise FitmarkError("usage", "--create needs --ref, which stays the same across retries")
+    if args.new and not args.ref:
+        raise FitmarkError("usage", "--new needs --ref: a ref says which person this is")
+    if args.ref and not (args.new or args.create):
+        raise FitmarkError("usage", "--ref goes with --create or --new")
 
     base = slug(args.name, "candidate")
     candidates = job_file.parent / "candidates"
     guard(full_path(candidates), args)
     title = readable(f"{initials(args.name)} – {job['role']} – {job['client']} v{version}")
-    # Choosing a new person's folder and claiming it must be one step for parallel runs.
-    claiming = args.new and args.create
-    with job_lock(job_file) if claiming else contextlib.nullcontext():
+    # Choosing a folder and reserving its output names must be one step for parallel runs.
+    with job_lock(job_file) if args.create else contextlib.nullcontext():
         folder = choose_candidate_folder(args, candidates, base)
         submittal = free_path(folder, f"submittal-s{version}", ".json")
         document = free_path(folder, title, ".docx")
@@ -630,9 +668,16 @@ def cmd_candidate(args):
             (folder / "source").mkdir(parents=True, exist_ok=True)
             if args.new:
                 write_atomic(folder / REF_FILE, args.ref)
-    if args.create:
-        submittal = free_path(folder, f"submittal-s{version}", ".json", reserve=True)
-        document = free_path(folder, title, ".docx", reserve=True)
+            # A retry with the same ref gets the names it reserved, so it leaves no empty files.
+            reused = reserved_paths(folder, args.ref, version)
+            if reused:
+                submittal, document = reused
+                for path in reused:
+                    guard(full_path(path), args)
+            else:
+                submittal = free_path(folder, f"submittal-s{version}", ".json", reserve=True)
+                document = free_path(folder, title, ".docx", reserve=True)
+                remember_reserved(folder, args.ref, version, submittal, document)
     return {
         "exists": exists,
         "slug": folder.name,
@@ -794,7 +839,9 @@ def build_parser():
         "--new", action="store_true", help="a different person who shares this name"
     )
     person.add_argument("--slug", help="which person, when several share this name")
-    candidate.add_argument("--ref", help="with --new: something stable that identifies this person")
+    candidate.add_argument(
+        "--ref", help="with --create or --new: something stable for this person and run"
+    )
 
     record = add("record", cmd_record)
     record.add_argument("--job", required=True, help="spec_id")
