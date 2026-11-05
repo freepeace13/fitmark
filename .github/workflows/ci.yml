@@ -8,11 +8,16 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the oldest Python the script must run on: macOS still ships it as python3.
+        python-version: ["3.9", "3.11"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m ruff check .
       - run: python -m pytest

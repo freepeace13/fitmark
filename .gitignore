@@ -5,5 +5,10 @@ __pycache__/
 .venv/
 .DS_Store
 
-# Agency profiles are private and never belong in this repo
-.fitmark/
+# Test reports stay local
+test-reports/
+
+# Workspaces hold private agency and candidate data and never belong in this repo
+/fitmark.yaml
+/agency/
+/clients/

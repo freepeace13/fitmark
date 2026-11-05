@@ -5,5 +5,13 @@
   "author": { "name": "Kin Basco", "url": "https://github.com/freepeace13" },
   "homepage": "https://github.com/freepeace13/fitmark",
   "license": "MIT",
-  "keywords": ["fitmark", "recruitment", "hiring", "talent", "agency"]
+  "keywords": ["fitmark", "recruitment", "hiring", "talent", "agency"],
+  "userConfig": {
+    "workspace": {
+      "type": "directory",
+      "title": "Fitmark folder",
+      "description": "Where Fitmark keeps your agency rules and client work. Leave as is to use ~/Fitmark.",
+      "default": "~/Fitmark"
+    }
+  }
 }
